@@ -1,10 +1,8 @@
 """Tests for the purge command helpers."""
 
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ── Selection parser ─────────────────────────────────────────────────────────
 
@@ -87,8 +85,8 @@ def test_sender_group_display_name_falls_back_to_email():
 
 
 def test_accumulator_groups_correctly():
-    from mailtrim.core.sender_stats import _Accumulator
     from mailtrim.core.gmail_client import Message, MessageHeader
+    from mailtrim.core.sender_stats import _Accumulator
 
     acc = _Accumulator("news@example.com", "Example News")
 
@@ -125,8 +123,9 @@ def test_accumulator_groups_correctly():
 
 def test_sort_by_oldest():
     """Groups sorted by oldest should put the one with the earliest first-email first."""
-    from mailtrim.core.sender_stats import SenderGroup
     from datetime import timedelta
+
+    from mailtrim.core.sender_stats import SenderGroup
 
     now = datetime.now(timezone.utc)
 
@@ -155,8 +154,9 @@ def test_sort_by_oldest():
 
 
 def test_inbox_days():
-    from mailtrim.core.sender_stats import SenderGroup
     from datetime import timedelta
+
+    from mailtrim.core.sender_stats import SenderGroup
 
     now = datetime.now(timezone.utc)
     group = SenderGroup(
@@ -209,9 +209,10 @@ def test_format_age_years_and_months():
 # ── compute_impact_scores ────────────────────────────────────────────────────
 
 
-def _make_group(email: str, count: int, size_bytes: int, days_ago: int = 30) -> "SenderGroup":
-    from mailtrim.core.sender_stats import SenderGroup
+def _make_group(email: str, count: int, size_bytes: int, days_ago: int = 30):
     from datetime import timedelta
+
+    from mailtrim.core.sender_stats import SenderGroup
 
     now = datetime.now(timezone.utc)
     return SenderGroup(
@@ -284,8 +285,7 @@ def test_group_by_domain_single_sender():
 
 
 def test_domain_group_has_unsubscribe_any():
-    from mailtrim.core.sender_stats import group_by_domain, SenderGroup
-    from datetime import timedelta
+    from mailtrim.core.sender_stats import SenderGroup, group_by_domain
 
     now = datetime.now(timezone.utc)
 
@@ -311,7 +311,7 @@ def test_domain_group_has_unsubscribe_any():
 
 
 def test_generate_insights_top_storage():
-    from mailtrim.core.sender_stats import generate_insights, group_by_domain, compute_impact_scores
+    from mailtrim.core.sender_stats import compute_impact_scores, generate_insights, group_by_domain
 
     groups = [
         _make_group("big@x.com", 10, 50 * 1024 * 1024),
@@ -334,7 +334,7 @@ def test_generate_insights_empty():
 
 
 def test_generate_insights_coverage():
-    from mailtrim.core.sender_stats import generate_insights, group_by_domain, compute_impact_scores
+    from mailtrim.core.sender_stats import compute_impact_scores, generate_insights, group_by_domain
 
     groups = [_make_group(f"{i}@x.com", 10, 1024 * 1024) for i in range(10)]
     compute_impact_scores(groups)
@@ -348,7 +348,7 @@ def test_generate_insights_coverage():
 
 
 def test_generate_recommendations_returns_at_most_top_n():
-    from mailtrim.core.sender_stats import generate_recommendations, compute_impact_scores
+    from mailtrim.core.sender_stats import compute_impact_scores, generate_recommendations
 
     groups = [_make_group(f"{i}@x.com", 100, 5 * 1024 * 1024, days_ago=200) for i in range(10)]
     compute_impact_scores(groups)
@@ -357,7 +357,7 @@ def test_generate_recommendations_returns_at_most_top_n():
 
 
 def test_generate_recommendations_has_commands():
-    from mailtrim.core.sender_stats import generate_recommendations, compute_impact_scores
+    from mailtrim.core.sender_stats import compute_impact_scores, generate_recommendations
 
     groups = [_make_group("news@example.com", 100, 10 * 1024 * 1024, days_ago=200)]
     compute_impact_scores(groups)
@@ -369,7 +369,7 @@ def test_generate_recommendations_has_commands():
 
 
 def test_generate_recommendations_max_2_actions_per_sender():
-    from mailtrim.core.sender_stats import generate_recommendations, compute_impact_scores
+    from mailtrim.core.sender_stats import compute_impact_scores, generate_recommendations
 
     groups = [_make_group("x@example.com", 200, 20 * 1024 * 1024, days_ago=300)]
     compute_impact_scores(groups)
@@ -382,8 +382,9 @@ def test_generate_recommendations_max_2_actions_per_sender():
 
 def test_confidence_high_all_signals():
     """Old, high-frequency sender with unsubscribe link → maximum confidence."""
-    from mailtrim.core.sender_stats import compute_confidence_score, SenderGroup
     from datetime import timedelta
+
+    from mailtrim.core.sender_stats import SenderGroup, compute_confidence_score
 
     now = datetime.now(timezone.utc)
     g = SenderGroup(
@@ -403,7 +404,7 @@ def test_confidence_high_all_signals():
 
 def test_confidence_low_no_signals():
     """Recent, rare sender with no unsubscribe link → near-zero confidence."""
-    from mailtrim.core.sender_stats import compute_confidence_score, SenderGroup
+    from mailtrim.core.sender_stats import SenderGroup, compute_confidence_score
 
     now = datetime.now(timezone.utc)
     # count=1, age=0d, no unsub → only freq component = (1/50)*35 ≈ 1 pt
@@ -424,7 +425,7 @@ def test_confidence_low_no_signals():
 
 def test_confidence_unsubscribe_adds_30():
     """has_unsubscribe with near-zero age/count should score ~30–31 pts."""
-    from mailtrim.core.sender_stats import compute_confidence_score, SenderGroup
+    from mailtrim.core.sender_stats import SenderGroup, compute_confidence_score
 
     now = datetime.now(timezone.utc)
     # unsub=30, age≈0, count=1 → freq=(1/50)*35≈0.7 → total ≈ 30–31
@@ -445,8 +446,9 @@ def test_confidence_unsubscribe_adds_30():
 
 def test_confidence_range():
     """Score must always be 0–100."""
-    from mailtrim.core.sender_stats import compute_confidence_score
     from datetime import timedelta
+
+    from mailtrim.core.sender_stats import compute_confidence_score
 
     now = datetime.now(timezone.utc)
     for has_unsub in (True, False):
@@ -466,9 +468,9 @@ def test_confidence_range():
                     has_unsubscribe=has_unsub,
                 )
                 s = compute_confidence_score(g)
-                assert 0 <= s <= 100, (
-                    f"score {s} out of range (days={days}, count={count}, unsub={has_unsub})"
-                )
+                assert (
+                    0 <= s <= 100
+                ), f"score {s} out of range (days={days}, count={count}, unsub={has_unsub})"
 
 
 # ── confidence_safety_label ───────────────────────────────────────────────────
@@ -524,8 +526,8 @@ def test_impact_label_low():
 
 def test_reclaimable_mb_sums_first_actions():
     from mailtrim.core.sender_stats import (
-        generate_recommendations,
         compute_impact_scores,
+        generate_recommendations,
         reclaimable_mb,
     )
 
@@ -558,14 +560,15 @@ def test_quick_win_picks_highest_composite():
     Of two recs, the one with higher confidence should win even if it has
     lower impact score (confidence is weighted 60%).
     """
+    from datetime import timedelta
+
     from mailtrim.core.sender_stats import (
-        quick_win,
-        Recommendation,
         Action,
+        Recommendation,
         SenderGroup,
         compute_impact_scores,
+        quick_win,
     )
-    from datetime import timedelta
 
     now = datetime.now(timezone.utc)
 
@@ -599,7 +602,7 @@ def test_quick_win_picks_highest_composite():
 
 def test_recommendation_has_confidence_field():
     """generate_recommendations must populate the confidence field."""
-    from mailtrim.core.sender_stats import generate_recommendations, compute_impact_scores
+    from mailtrim.core.sender_stats import compute_impact_scores, generate_recommendations
 
     groups = [_make_group("x@example.com", 60, 8 * 1024 * 1024, days_ago=200)]
     compute_impact_scores(groups)
@@ -609,15 +612,15 @@ def test_recommendation_has_confidence_field():
 
 def test_recommendation_commands_use_structured_flags():
     """Commands must use --domain flag, not NL bulk strings."""
-    from mailtrim.core.sender_stats import generate_recommendations, compute_impact_scores
+    from mailtrim.core.sender_stats import compute_impact_scores, generate_recommendations
 
     groups = [_make_group("news@example.com", 100, 10 * 1024 * 1024, days_ago=200)]
     compute_impact_scores(groups)
     recs = generate_recommendations(groups, top_n=1)
     for action in recs[0].actions:
-        assert "bulk" not in action.command, (
-            f"Expected structured command, got NL: {action.command}"
-        )
+        assert (
+            "bulk" not in action.command
+        ), f"Expected structured command, got NL: {action.command}"
         assert "--domain" in action.command or "purge" in action.command
 
 
@@ -625,8 +628,9 @@ def test_recommendation_commands_use_structured_flags():
 
 
 def test_confidence_reason_all_signals():
-    from mailtrim.core.sender_stats import confidence_reason, SenderGroup
     from datetime import timedelta
+
+    from mailtrim.core.sender_stats import SenderGroup, confidence_reason
 
     now = datetime.now(timezone.utc)
     g = SenderGroup(
@@ -647,7 +651,7 @@ def test_confidence_reason_all_signals():
 
 
 def test_confidence_reason_no_signals():
-    from mailtrim.core.sender_stats import confidence_reason, SenderGroup
+    from mailtrim.core.sender_stats import SenderGroup, confidence_reason
 
     now = datetime.now(timezone.utc)
     g = SenderGroup(
@@ -666,7 +670,7 @@ def test_confidence_reason_no_signals():
 
 def test_confidence_reason_partial():
     """Only unsubscribe signal present → only that part in reason."""
-    from mailtrim.core.sender_stats import confidence_reason, SenderGroup
+    from mailtrim.core.sender_stats import SenderGroup, confidence_reason
 
     now = datetime.now(timezone.utc)
     g = SenderGroup(

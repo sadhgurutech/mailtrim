@@ -1,0 +1,30 @@
+repos:
+  # Ruff: lint + format (replaces flake8, isort, black)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.4.0
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  # Bandit: security static analysis
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.7.9
+    hooks:
+      - id: bandit
+        args: ["-r", "mailtrim/", "-ll", "-q"]
+        pass_filenames: false
+
+  # General hygiene
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: check-merge-conflict       # catch unresolved <<<< markers
+      - id: check-added-large-files    # block accidental binary/data commits
+        args: [--maxkb=500]
+      - id: check-json                 # validate JSON files
+      - id: check-yaml                 # validate YAML files
+      - id: end-of-file-fixer          # ensure files end with a newline
+      - id: trailing-whitespace        # strip trailing spaces
+      - id: no-commit-to-branch        # prevent direct pushes to main
+        args: [--branch, main]
