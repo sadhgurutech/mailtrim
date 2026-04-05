@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import ipaddress
 import re
+import socket
+import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -10,6 +13,67 @@ import httpx
 
 from mailtrim.core.gmail_client import GmailClient, Message
 from mailtrim.core.storage import UnsubscribeRecord, get_session
+
+# ── URL safety validation ─────────────────────────────────────────────────────
+
+# Private, loopback, and link-local ranges that must never be fetched.
+# Link-local (169.254/16) covers AWS/GCP/Azure instance metadata endpoints.
+_BLOCKED_NETWORKS: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),  # link-local / cloud metadata
+    ipaddress.ip_network("0.0.0.0/8"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
+]
+
+
+def _is_safe_url(url: str) -> tuple[bool, str]:
+    """
+    Validate that a URL is safe to fetch before making any outbound request.
+
+    Returns (safe: bool, reason: str). Blocks:
+    - Non-http(s) schemes (file://, ftp://, etc.)
+    - Private / loopback / link-local IP ranges (SSRF prevention)
+    - Hostnames that fail DNS resolution
+
+    This guards against SSRF attacks where a malicious sender plants a
+    crafted List-Unsubscribe header pointing at internal infrastructure
+    (e.g. http://169.254.169.254/latest/meta-data/).
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        return False, "malformed URL"
+
+    if parsed.scheme not in ("http", "https"):
+        return False, f"scheme '{parsed.scheme}' not allowed — only http/https"
+
+    host = parsed.hostname
+    if not host:
+        return False, "no hostname"
+
+    # Resolve all addresses the hostname maps to and check every one.
+    # We check all, not just the first, to prevent DNS rebinding attacks.
+    try:
+        addr_infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return False, f"hostname '{host}' did not resolve"
+
+    for info in addr_infos:
+        raw_addr = info[4][0]
+        try:
+            ip = ipaddress.ip_address(raw_addr)
+        except ValueError:
+            return False, f"could not parse resolved address '{raw_addr}'"
+        for network in _BLOCKED_NETWORKS:
+            if ip in network:
+                return False, f"'{host}' resolves to private/reserved address {ip}"
+
+    return True, ""
 
 
 @dataclass
@@ -96,12 +160,15 @@ class UnsubscribeEngine:
     # ── Stage 1a: RFC 8058 one-click POST ────────────────────────────────────
 
     def _one_click_post(self, url: str, sender: str) -> UnsubscribeResult:
+        safe, reason = _is_safe_url(url)
+        if not safe:
+            return UnsubscribeResult(sender, "header_url", False, f"Blocked unsafe URL: {reason}")
         try:
             resp = httpx.post(
                 url,
                 data={"List-Unsubscribe": "One-Click"},
                 timeout=10,
-                follow_redirects=True,
+                follow_redirects=False,  # never follow redirects to avoid redirect-based SSRF
             )
             if resp.status_code < 400:
                 return UnsubscribeResult(
@@ -138,8 +205,11 @@ class UnsubscribeEngine:
     # ── Stage 1c: URL GET ────────────────────────────────────────────────────
 
     def _url_unsubscribe(self, url: str, sender: str) -> UnsubscribeResult:
+        safe, reason = _is_safe_url(url)
+        if not safe:
+            return UnsubscribeResult(sender, "header_url", False, f"Blocked unsafe URL: {reason}")
         try:
-            resp = httpx.get(url, timeout=10, follow_redirects=True)
+            resp = httpx.get(url, timeout=10, follow_redirects=False)
             if resp.status_code < 400:
                 return UnsubscribeResult(
                     sender,
@@ -174,6 +244,10 @@ class UnsubscribeEngine:
             return UnsubscribeResult(
                 sender, "headless", False, "No unsubscribe link found in email body."
             )
+
+        safe, reason = _is_safe_url(unsub_url)
+        if not safe:
+            return UnsubscribeResult(sender, "headless", False, f"Blocked unsafe URL: {reason}")
 
         try:
             with sync_playwright() as p:
