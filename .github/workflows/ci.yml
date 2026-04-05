@@ -30,6 +30,9 @@ jobs:
       - name: Format check
         run: ruff format --check mailtrim/ tests/
 
+      - name: Security scan
+        run: bandit -r mailtrim/ -ll -q
+
       - name: Test
         run: pytest tests/ -v --tb=short --cov=mailtrim --cov-report=term-missing
         env:

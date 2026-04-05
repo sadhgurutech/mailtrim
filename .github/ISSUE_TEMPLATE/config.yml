@@ -3,3 +3,6 @@ contact_links:
   - name: Question or general discussion
     url: https://github.com/sadhgurutech/mailtrim/discussions
     about: Ask questions and discuss ideas here instead of opening an issue
+  - name: Report a security vulnerability
+    url: https://github.com/sadhgurutech/mailtrim/security/advisories/new
+    about: Please report security issues privately — do not open a public issue

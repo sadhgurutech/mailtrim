@@ -41,7 +41,7 @@ _CATEGORIES = [
 
 def _bucket(gmail_id: str) -> int:
     """Deterministic 0–6 bucket from message ID."""
-    h = int(hashlib.md5(gmail_id.encode()).hexdigest(), 16)
+    h = int(hashlib.md5(gmail_id.encode(), usedforsecurity=False).hexdigest(), 16)
     return h % len(_CATEGORIES)
 
 
