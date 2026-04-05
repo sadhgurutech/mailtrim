@@ -1,7 +1,5 @@
 """Tests for SSRF protection in the unsubscribe URL validator."""
 
-import pytest
-
 
 def test_safe_public_https_url(monkeypatch):
     import socket

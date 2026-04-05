@@ -1,7 +1,5 @@
 """Tests for MockAIEngine — verifies every AI code path without an Anthropic key."""
 
-from datetime import datetime, timezone
-
 import pytest
 
 from mailtrim.core.gmail_client import Message, MessageHeader

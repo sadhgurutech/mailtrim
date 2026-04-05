@@ -1,10 +1,7 @@
 """Tests for the storage layer."""
 
 import json
-import os
-import tempfile
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -155,8 +152,8 @@ def test_rule_create_and_deactivate():
 
 
 def test_avoidance_view_tracking():
-    from mailtrim.core.storage import EmailRecord, EmailRepo, get_session
     from mailtrim.config import get_settings
+    from mailtrim.core.storage import EmailRecord, EmailRepo, get_session
 
     session = get_session()
     repo = EmailRepo(session)
