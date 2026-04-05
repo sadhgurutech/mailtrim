@@ -468,9 +468,9 @@ def test_confidence_range():
                     has_unsubscribe=has_unsub,
                 )
                 s = compute_confidence_score(g)
-                assert (
-                    0 <= s <= 100
-                ), f"score {s} out of range (days={days}, count={count}, unsub={has_unsub})"
+                assert 0 <= s <= 100, (
+                    f"score {s} out of range (days={days}, count={count}, unsub={has_unsub})"
+                )
 
 
 # ── confidence_safety_label ───────────────────────────────────────────────────
@@ -618,9 +618,9 @@ def test_recommendation_commands_use_structured_flags():
     compute_impact_scores(groups)
     recs = generate_recommendations(groups, top_n=1)
     for action in recs[0].actions:
-        assert (
-            "bulk" not in action.command
-        ), f"Expected structured command, got NL: {action.command}"
+        assert "bulk" not in action.command, (
+            f"Expected structured command, got NL: {action.command}"
+        )
         assert "--domain" in action.command or "purge" in action.command
 
 
