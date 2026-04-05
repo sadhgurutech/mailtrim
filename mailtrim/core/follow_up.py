@@ -82,7 +82,6 @@ class FollowUpTracker:
             if len(thread.messages) <= 1:
                 continue
 
-            original_sender = thread.messages[0].headers.from_
             for msg in thread.messages[1:]:
                 reply_from = msg.headers.from_
                 # A reply is any message NOT sent by the original sender

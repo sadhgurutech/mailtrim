@@ -2,17 +2,14 @@
 
 from __future__ import annotations
 
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 import typer
-from rich import print as rprint
-from rich.columns import Columns
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 from rich.text import Text
@@ -71,8 +68,7 @@ def auth(
     )
 ):
     """Authenticate with Gmail (opens browser for OAuth consent)."""
-    from mailtrim.core.gmail_client import authenticate, CREDENTIALS_PATH, TOKEN_PATH
-    from mailtrim.config import DATA_DIR
+    from mailtrim.core.gmail_client import authenticate
 
     console.print(Panel.fit(
         "[bold]MailTrim — Authentication[/bold]\n\n"
@@ -125,23 +121,23 @@ def stats(
     """
     import json as json_lib
     import time as _time
+
     from mailtrim.core.sender_stats import (
+        compute_confidence_score,
+        confidence_reason,
+        confidence_safety_label,
         fetch_sender_groups,
-        group_by_domain,
+        format_time_estimate,
+        generate_headline_insight,
         generate_insights,
         generate_recommendations,
+        generate_viral_share_text,
+        group_by_domain,
         impact_label,
-        confidence_safety_label,
-        confidence_reason,
-        risk_tier_icon,
-        compute_confidence_score,
+        quick_win,
         reclaimable_mb,
         reclaimable_pct,
-        quick_win,
-        format_time_estimate,
-        generate_share_text,
-        generate_viral_share_text,
-        generate_headline_insight,
+        risk_tier_icon,
     )
 
     scan_start = _time.time()
@@ -481,7 +477,7 @@ def sync(
         TaskProgressColumn(),
         console=console,
     ) as progress:
-        task = progress.add_task(f"Fetching message IDs...", total=None)
+        task = progress.add_task("Fetching message IDs...", total=None)
         ids = client.list_message_ids(query=query, max_results=limit)
         progress.update(task, description=f"Fetching {len(ids)} messages...", total=len(ids))
 
@@ -530,7 +526,6 @@ def triage(
     show_actions: bool = typer.Option(True, "--actions/--no-actions", help="Show suggested actions."),
 ):
     """AI-powered inbox triage with explanations for every decision."""
-    from mailtrim.core.ai_engine import AIEngine
     from mailtrim.core.avoidance import AvoidanceDetector
 
     client = _get_client()
@@ -605,7 +600,7 @@ def triage(
         table.add_row(*row)
 
     console.print(table)
-    console.print(f"\n[dim]Tip: Use [bold]mailtrim avoid[/bold] to see emails you've been putting off.[/dim]")
+    console.print("\n[dim]Tip: Use [bold]mailtrim avoid[/bold] to see emails you've been putting off.[/dim]")
 
 
 # ── bulk ─────────────────────────────────────────────────────────────────────
@@ -655,7 +650,7 @@ def bulk(
         return
 
     if dry_run:
-        console.print(f"\n[dim]Dry run — no changes made. Remove --dry-run to execute.[/dim]")
+        console.print("\n[dim]Dry run — no changes made. Remove --dry-run to execute.[/dim]")
         return
 
     if not yes:
@@ -1184,7 +1179,8 @@ def purge(
       mailtrim purge --unsub   # also unsubscribe while deleting
     """
     import time as _time
-    from mailtrim.core.sender_stats import fetch_sender_groups, generate_share_text
+
+    from mailtrim.core.sender_stats import fetch_sender_groups
     from mailtrim.core.storage import UndoLogRepo, get_session
     from mailtrim.core.unsubscribe import UnsubscribeEngine
 
@@ -1272,7 +1268,6 @@ def purge(
 
     # ── Domain mode: skip table + interactive selection, auto-select all ──────
     if domain:
-        label = f"--older-than {older_than}d" if older_than else "all"
         keep_note = f" (keeping last {keep})" if keep is not None else ""
         console.print(
             f"\n[bold]Domain target:[/bold] [cyan]{domain}[/cyan]  "

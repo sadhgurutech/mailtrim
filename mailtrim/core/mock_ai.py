@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass
 
 from mailtrim.core.ai_engine import (
     AIEngine,
@@ -21,7 +20,6 @@ from mailtrim.core.ai_engine import (
     NLRule,
 )
 from mailtrim.core.gmail_client import Message
-
 
 # Deterministic bucketing so the same email always gets the same category
 _CATEGORIES = [
@@ -167,7 +165,6 @@ def _heuristic_parse(text: str) -> tuple[str, str, dict]:
     age_clause = ""
     if age_match:
         n, unit = age_match.group(1), age_match.group(2)
-        unit_map = {"day": "d", "week": "d", "month": "d", "year": "d"}
         multiplier = {"day": 1, "week": 7, "month": 30, "year": 365}
         days = int(n) * multiplier[unit]
         age_clause = f"older_than:{days}d"
@@ -202,6 +199,7 @@ def get_ai_engine() -> "AIEngine | MockAIEngine":
     See PRIVACY.md for full details.
     """
     import os
+
     from rich.console import Console
 
     key = os.environ.get("ANTHROPIC_API_KEY", "").strip()

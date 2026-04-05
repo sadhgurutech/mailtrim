@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Any
 
 from sqlalchemy import (
     Boolean,
@@ -14,12 +13,10 @@ from sqlalchemy import (
     String,
     Text,
     create_engine,
-    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from mailtrim.config import DB_PATH, get_settings
-
 
 # ── Base ─────────────────────────────────────────────────────────────────────
 
@@ -245,8 +242,8 @@ class EmailRepo:
             self.s.query(EmailRecord)
             .filter(
                 EmailRecord.account_email == account_email,
-                EmailRecord.is_inbox == True,
-                EmailRecord.is_acted_on == False,
+                EmailRecord.is_inbox.is_(True),
+                EmailRecord.is_acted_on.is_(False),
                 EmailRecord.view_count >= t,
             )
             .order_by(EmailRecord.view_count.desc())
@@ -283,9 +280,9 @@ class FollowUpRepo:
             .filter(
                 FollowUp.account_email == account_email,
                 FollowUp.remind_at <= now,
-                FollowUp.replied == False,
-                FollowUp.dismissed == False,
-                FollowUp.snoozed_until == None,
+                FollowUp.replied.is_(False),
+                FollowUp.dismissed.is_(False),
+                FollowUp.snoozed_until.is_(None),
             )
             .all()
         )
