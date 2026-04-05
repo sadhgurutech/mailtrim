@@ -13,7 +13,7 @@
 
 mailtrim is a CLI tool that finds inbox clutter, ranks it by impact, and bulk-deletes it safely — with a 30-day undo window.
 
-**Core workflow (`stats`, `purge`, `undo`) is fully local** — no API key required, nothing sent anywhere. Optional AI commands (`triage`, `bulk`, `rules`) send only email subjects and 300-character snippets to Anthropic for classification — never full body content, never stored.
+**Core workflow (`stats`, `purge`, `undo`) is fully local** — no API key required, nothing sent anywhere. Optional AI commands (`triage`, `bulk`, `avoid`, `digest`, `rules --add`) send only email subjects and 300-character snippets to Anthropic for classification — never full body content. See [Anthropic's privacy policy](https://www.anthropic.com/privacy) for how API data is handled on their side.
 
 No subscription. No black box.
 
@@ -31,7 +31,7 @@ The paid tools charge $7–$40/month, process your email on their servers, and s
 | 30-day undo for bulk operations | ✗ Not solved | ✅ Full undo log |
 | "Emails I keep avoiding" detection | ✗ Not solved | ✅ AI insight per avoided email |
 | Unsubscribe success rate | 70–85% | ✅ Near-100% (headless browser fallback) |
-| Privacy — data stays local | ✗ Cloud-processed | ✅ SQLite only, nothing external |
+| Privacy — core commands local | ✗ Cloud-processed | ✅ Core: local only. AI commands: subjects/snippets to Anthropic |
 | Cost | $7–$40/month | **Free** |
 
 ---
@@ -40,9 +40,11 @@ The paid tools charge $7–$40/month, process your email on their servers, and s
 
 - **All data stays in `~/.mailtrim/`** — no external servers, no telemetry, no analytics
 - **OAuth token** is written `chmod 0o600` (owner read-only)
-- **AI features** send only email subjects and snippets to Anthropic — never full body content
-- **No AI key?** — everything except `triage`, `bulk`, `rules`, `avoid`, and `digest` works without one
-- **Why `gmail.send` scope?** The `follow-up` command can create reminder drafts on your behalf. It is never called by `stats`, `purge`, `triage`, `bulk`, `undo`, or any cleanup command. If you don't use `follow-up`, this permission is never exercised.
+- **AI features** send only email subjects and snippets to Anthropic — never full body content. See [Anthropic's privacy policy](https://www.anthropic.com/privacy) for their data handling.
+- **No AI key?** — everything except `triage`, `bulk`, `avoid`, `digest`, and `rules --add` works without one
+- **Why `gmail.modify` scope?** This grants read, compose, trash, and label access — mailtrim uses it to list messages, move mail to Trash, and manage labels. The scope technically permits reading full body content; mailtrim fetches metadata only and never reads or stores body text.
+- **Why `gmail.send` scope?** The `follow-up` command creates reminder drafts. It is never called by `stats`, `purge`, `triage`, `bulk`, `undo`, or any cleanup command. If you don't use `follow-up`, this permission is never exercised.
+- **Revoking access:** Go to [myaccount.google.com/permissions](https://myaccount.google.com/permissions) and remove mailtrim. Delete `~/.mailtrim/token.json` locally to complete the removal.
 - See [PRIVACY.md](PRIVACY.md) for the full data flow
 
 ---
@@ -84,7 +86,7 @@ This is a standard OAuth setup — you're authorising yourself to access your ow
 4. **Credentials** → Create → **OAuth 2.0 Client ID** → Desktop app → Download JSON
 5. Save it: `mv ~/Downloads/client_secret_*.json ~/.mailtrim/credentials.json`
 
-> **Scopes requested:** `gmail.modify` (read + delete) and `gmail.send` (follow-up reminders). No read access to body content is needed — mailtrim only fetches metadata.
+> **Scopes requested:** `gmail.modify` (read, trash, label management) and `gmail.send` (follow-up drafts). `gmail.modify` grants the capability to read body content — mailtrim never does, but you should know the scope allows it.
 
 > **"This app isn't verified" warning:** Google shows this for any OAuth app that hasn't gone through their review process. It is expected and safe to proceed — you are authorising your own app to access your own inbox. Click **Advanced → Go to mailtrim (unsafe)** to continue.
 
@@ -162,7 +164,7 @@ mailtrim stats --share
 ╭─ Share mailtrim ──────────────────────────────────────────────────────────────╮
 │  🤯 495 emails deleted · 87.4 MB freed in 8s using mailtrim                  │
 │     • 3 senders responsible                                                     │
-│     • Runs locally — no data leaves your machine                               │
+│     • Core cleanup runs locally — no API key needed                            │
 │     • My inbox was 34% clutter — now it's clean                                │
 │     • ~41 min of reading time reclaimed                                         │
 │                                                                                 │
@@ -306,6 +308,8 @@ MAILTRIM_DRY_RUN=false
 MAILTRIM_UNDO_WINDOW_DAYS=30
 ```
 
+> **Security note:** Restrict permissions on this file — `chmod 600 ~/.mailtrim/.env` — so only your user account can read the API key.
+
 ---
 
 ## Testing (no credentials required)
@@ -321,7 +325,6 @@ python -m pytest tests/ --cov=mailtrim --cov-report=term-missing
 All AI paths are covered by `MockAIEngine` — the full CLI can be exercised without any API key.
 
 ---
-
 
 ## Contributing
 
