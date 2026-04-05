@@ -105,24 +105,23 @@ mailtrim stats
 
 **Sample output** *(illustrative — your numbers will vary)*:
 ```
-  ✨ First scan complete — analyzing your inbox patterns  (2,000 emails · 38 senders)
+Scan complete — 2,000 emails · 38 senders
 
-  💥 34% of your inbox is clutter — caused by just 3 senders. 87.4 MB gone in one command.
+34% of your inbox is clutter — caused by just 3 senders. 87.4 MB gone in one command.
 
-╭─ TOTAL RECLAIMABLE SPACE ──────────────────────────────────────────────────────────╮
-│  You can safely free ~87.4 MB (34.0% of scanned inbox)                             │
-│  from your top 3 senders  ·  Each cleanup takes ~3–5s  ·                           │
-│  All deletions go to Trash — undo anytime                                           │
-╰────────────────────────────────────────────────────────────────────────────────────╯
+TOTAL RECLAIMABLE SPACE
+  You can safely free ~87.4 MB (34.0% of scanned inbox)
+  from your top 3 senders · Each cleanup takes ~3-5s
+  All deletions go to Trash — undo anytime
 
- #  Impact         Sender                Emails  Size     Oldest       Risk               Unsub
- 1  100 (High)     LinkedIn Jobs            312  44.0MB   847d ago    🟢 Safe to clean      ✓
- 2   82 (High)     Substack Weekly          183  26.1MB   512d ago    🟢 Safe to clean      ✓
- 3   51 (Medium)   GitHub Notifications     147   9.3MB    91d ago    🟡 Low risk           –
- 4   29 (Low)      Shopify                   94  12.2MB   203d ago    🟢 Safe to clean      ✓
- 5   18 (Low)      Medium Daily Digest       87  11.4MB   445d ago    🟢 Safe to clean      ✓
+ #  Impact         Sender                Emails  Size     Oldest       Risk
+ 1  100 (High)     LinkedIn Jobs            312  44.0MB   847d ago     Safe to clean
+ 2   82 (High)     Substack Weekly          183  26.1MB   512d ago     Safe to clean
+ 3   51 (Medium)   GitHub Notifications     147   9.3MB    91d ago     Low risk
+ 4   29 (Low)      Shopify                   94  12.2MB   203d ago     Safe to clean
+ 5   18 (Low)      Medium Daily Digest       87  11.4MB   445d ago     Safe to clean
 
-  Impact = 60% storage + 40% volume (0–100)  ·  Risk: 🟢 Safe  🟡 Low risk  🔴 Review first
+Impact = 60% storage + 40% volume (0-100)
 ```
 
 ### 5. Bulk delete the offenders
@@ -160,17 +159,16 @@ Move 495 emails to Trash? (undo available for 30 days) [y/N]: y
 mailtrim stats --share
 ```
 
+The command outputs the following text, ready to copy and paste:
+
 ```
-╭─ Share mailtrim ──────────────────────────────────────────────────────────────╮
-│  🤯 495 emails deleted · 87.4 MB freed in 8s using mailtrim                  │
-│     • 3 senders responsible                                                     │
-│     • Core cleanup runs locally — no API key needed                            │
-│     • My inbox was 34% clutter — now it's clean                                │
-│     • ~41 min of reading time reclaimed                                         │
-│                                                                                 │
-│  Free forever. → https://github.com/sadhgurutech/mailtrim                        │
-╰─────────────────────────────────────────────────────────────────────────────────╯
-  Copy the text above — paste it to Twitter, Slack, or a team chat.
+🤯 495 emails deleted · 87.4 MB freed in 8s using mailtrim
+   • 3 senders responsible
+   • Core cleanup runs locally — no API key needed
+   • My inbox was 34% clutter — now it's clean
+   • ~41 min of reading time reclaimed
+
+Free forever. → https://github.com/sadhgurutech/mailtrim
 ```
 
 ---
@@ -181,8 +179,7 @@ mailtrim stats --share
 
 ```bash
 mailtrim stats
-mailtrim stats --scope anywhere   # scan all mail, not just inbox (archived, sent, etc.)
-mailtrim stats --json             # machine-readable output
+mailtrim stats --json   # machine-readable output
 ```
 
 ### `purge` — Bulk delete by sender *(no AI needed)*
@@ -203,7 +200,6 @@ Scores are heuristics — the 30-day undo exists precisely because no heuristic 
 
 ```bash
 mailtrim purge                          # sort by email count (default)
-mailtrim purge --scope anywhere         # scan all mail, not just inbox
 mailtrim purge --sort oldest            # show oldest clutter first
 mailtrim purge --sort size              # largest senders first
 mailtrim purge --query "older_than:1y"  # custom query
@@ -212,11 +208,10 @@ mailtrim purge --permanent              # skip Trash — IRREVERSIBLE
 mailtrim purge --json                   # output sender list as JSON
 ```
 
-### `sync` — Pull mail into local cache
+### `sync` — Pull inbox into local cache
 
 ```bash
-mailtrim sync                         # last 200 inbox messages
-mailtrim sync --scope anywhere        # sync all mail, not just inbox
+mailtrim sync             # last 200 messages
 mailtrim sync --limit 500
 mailtrim sync --query "in:inbox is:unread"
 ```
