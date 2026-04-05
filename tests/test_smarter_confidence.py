@@ -26,8 +26,6 @@ def isolated_db(monkeypatch, tmp_path):
 
     yield
 
-    import mailtrim.core.storage as storage
-
     if storage._engine:
         storage._engine.dispose()
     storage._engine = None
@@ -200,7 +198,8 @@ def test_blocklist_remove_nonexistent_returns_false():
     from mailtrim.core.storage import BlocklistRepo, get_session
 
     repo = BlocklistRepo(get_session())
-    assert repo.remove("user@gmail.com", "nobody@example.com") is False
+    removed = repo.remove("user@gmail.com", "nobody@example.com")
+    assert removed is False
 
 
 def test_blocklist_blocked_emails_set():
