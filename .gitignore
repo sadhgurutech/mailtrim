@@ -17,7 +17,7 @@ venv/
 .pytest_cache/
 .ruff_cache/
 
-# Gmail-zero secrets — NEVER commit these
+# mailtrim secrets — NEVER commit these
 credentials.json
 token.json
 *.db
