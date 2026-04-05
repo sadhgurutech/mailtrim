@@ -807,6 +807,24 @@ def undo(
 
     console.print(f"[green]Restored {count} messages.[/green]")
 
+    # Offer to protect the senders so this doesn't happen again
+    senders = entry.op_metadata.get("senders", [])
+    if senders and not yes:
+        protect_them = Confirm.ask(
+            f"Protect {len(senders)} sender(s) from future purges?",
+            default=False,
+        )
+        if protect_them:
+            from mailtrim.core.storage import BlocklistRepo
+
+            repo = BlocklistRepo(get_session())
+            for s in senders:
+                repo.add(account_email, s, reason="undo_feedback")
+            console.print(
+                f"[green]Protected {len(senders)} sender(s).[/green] "
+                "Manage with [cyan]mailtrim protect --list[/cyan]"
+            )
+
 
 # ── follow-up ─────────────────────────────────────────────────────────────────
 
@@ -1338,6 +1356,21 @@ def purge(
         )
         progress.update(t, description=f"Found {len(groups)} senders.")
 
+    # Filter protected senders before displaying anything
+    from mailtrim.core.storage import BlocklistRepo
+    from mailtrim.core.storage import get_session as _get_session
+
+    _blocked = BlocklistRepo(_get_session()).blocked_emails(account_email)
+    if _blocked:
+        before = len(groups)
+        groups = [g for g in groups if g.sender_email not in _blocked]
+        filtered_count = before - len(groups)
+        if filtered_count:
+            console.print(
+                f"[dim]({filtered_count} protected sender(s) hidden — "
+                "mailtrim protect --list to manage)[/dim]"
+            )
+
     if not groups:
         console.print("[yellow]No matching emails found.[/yellow]")
         return
@@ -1605,6 +1638,73 @@ def purge(
                     result = unsub_engine.unsubscribe(msg)
                     status = "[green]ok[/green]" if result.success else "[red]failed[/red]"
                     console.print(f"  {status} {g.sender_email} [dim]({result.method})[/dim]")
+
+
+# ── protect ───────────────────────────────────────────────────────────────────
+
+
+@app.command()
+def protect(
+    sender: Optional[str] = typer.Argument(None, help="Sender email to protect from purge."),
+    remove: Optional[str] = typer.Option(
+        None, "--remove", "-r", help="Remove a sender from the protected list."
+    ),
+    list_protected: bool = typer.Option(False, "--list", "-l", help="List all protected senders."),
+):
+    """
+    Protect a sender from future purge operations.
+
+    Protected senders are hidden from the purge list entirely.
+    Add a sender after an accidental purge (undo also prompts you).
+
+    Examples:
+      mailtrim protect invoices@mybank.com
+      mailtrim protect --list
+      mailtrim protect --remove invoices@mybank.com
+    """
+    from mailtrim.core.storage import BlocklistRepo, get_session
+
+    client = _get_client()
+    account_email = _get_account_email(client)
+    repo = BlocklistRepo(get_session())
+
+    if list_protected:
+        entries = repo.list_all(account_email)
+        if not entries:
+            console.print("[yellow]No protected senders.[/yellow]")
+            console.print("[dim]Add one with: mailtrim protect <email>[/dim]")
+            return
+        table = Table(title="Protected Senders", border_style="dim")
+        table.add_column("Sender", min_width=35)
+        table.add_column("Reason", width=18)
+        table.add_column("Protected since", width=16)
+        for e in entries:
+            table.add_row(
+                e.sender_email,
+                e.reason.replace("_", " "),
+                e.created_at.strftime("%Y-%m-%d"),
+            )
+        console.print(table)
+        console.print("\nRemove with [cyan]mailtrim protect --remove <email>[/cyan]")
+        return
+
+    if remove:
+        removed = repo.remove(account_email, remove)
+        if removed:
+            console.print(f"[green]Removed[/green] {remove} from the protected list.")
+        else:
+            console.print(f"[yellow]{remove} was not in the protected list.[/yellow]")
+        return
+
+    if not sender:
+        console.print("Provide a sender email, or use --list / --remove. See --help.")
+        raise typer.Exit(1)
+
+    repo.add(account_email, sender)
+    console.print(
+        f"[green]Protected:[/green] [bold]{sender}[/bold]\n"
+        "[dim]This sender will no longer appear in purge lists.[/dim]"
+    )
 
 
 # ── version ───────────────────────────────────────────────────────────────────

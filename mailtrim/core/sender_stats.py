@@ -22,6 +22,35 @@ from mailtrim.core.gmail_client import GmailClient, Message
 
 SortKey = Literal["score", "count", "oldest", "size"]
 
+# ── Transactional keyword detection ───────────────────────────────────────────
+
+# These keywords in subject lines suggest the email is transactional (receipts,
+# invoices, security alerts, etc.) — content the user likely needs to keep.
+# When detected, confidence score is penalised to reduce false positives.
+_TRANSACTIONAL_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "receipt",
+        "invoice",
+        "order",
+        "order confirmation",
+        "confirmation",
+        "tracking",
+        "shipment",
+        "delivery",
+        "payment",
+        "statement",
+        "bill",
+        "security alert",
+        "verification",
+        "password",
+        "your account",
+        "purchase",
+        "subscription renewal",
+    }
+)
+
+_TRANSACTIONAL_PENALTY = 25  # pts deducted when transactional keywords are found
+
 
 # ── Age formatting ────────────────────────────────────────────────────────────
 
@@ -208,7 +237,16 @@ def compute_confidence_score(g: SenderGroup) -> int:
     unsub_score = 30 if g.has_unsubscribe else 0
     age_score = min(g.inbox_days / 180, 1.0) * 35
     freq_score = min(g.count / 50, 1.0) * 35
-    return round(min(unsub_score + age_score + freq_score, 100))
+    raw = round(min(unsub_score + age_score + freq_score, 100))
+
+    # Penalise if sample subjects contain transactional keywords.
+    # Transactional mail (receipts, invoices, security alerts) is high-cost to
+    # delete by mistake — lower the score to surface the 🔴 "review first" warning.
+    subjects_lower = " ".join(g.sample_subjects).lower()
+    if any(kw in subjects_lower for kw in _TRANSACTIONAL_KEYWORDS):
+        raw = max(0, raw - _TRANSACTIONAL_PENALTY)
+
+    return raw
 
 
 def confidence_safety_label(score: int) -> str:
@@ -250,6 +288,9 @@ def confidence_reason(g: SenderGroup) -> str:
         parts.append("old emails")
     if g.count >= 30:
         parts.append("high frequency")
+    subjects_lower = " ".join(g.sample_subjects).lower()
+    if any(kw in subjects_lower for kw in _TRANSACTIONAL_KEYWORDS):
+        parts.append("transactional keywords detected")
     return " + ".join(parts) if parts else "limited signals"
 
 

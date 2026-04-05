@@ -174,6 +174,19 @@ class UnsubscribeRecord(Base):
     last_received_at = Column(DateTime, nullable=True)  # Last email from this sender post-unsub
 
 
+class SenderBlocklist(Base):
+    """Senders the user has protected from future purge operations."""
+
+    __tablename__ = "sender_blocklist"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_email = Column(String, nullable=False)
+    sender_email = Column(String, nullable=False)
+    sender_domain = Column(String, nullable=False)
+    reason = Column(String, default="user_protected")  # "user_protected" | "undo_feedback"
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 # ── Engine / session factory ─────────────────────────────────────────────────
 
 
@@ -389,3 +402,65 @@ class RuleRepo:
             r.last_run_at = datetime.now(timezone.utc)
             r.run_count += 1
             self.s.commit()
+
+
+class BlocklistRepo:
+    """CRUD for SenderBlocklist — senders protected from purge operations."""
+
+    def __init__(self, session: Session):
+        self.s = session
+
+    def add(
+        self,
+        account_email: str,
+        sender_email: str,
+        reason: str = "user_protected",
+    ) -> SenderBlocklist:
+        """Add a sender to the blocklist. Idempotent — returns existing entry if already present."""
+        domain = (
+            sender_email.split("@")[-1].lower() if "@" in sender_email else sender_email.lower()
+        )
+        existing = (
+            self.s.query(SenderBlocklist)
+            .filter_by(account_email=account_email, sender_email=sender_email)
+            .first()
+        )
+        if existing:
+            return existing
+        entry = SenderBlocklist(
+            account_email=account_email,
+            sender_email=sender_email,
+            sender_domain=domain,
+            reason=reason,
+        )
+        self.s.add(entry)
+        self.s.commit()
+        return entry
+
+    def remove(self, account_email: str, sender_email: str) -> bool:
+        """Remove a sender from the blocklist. Returns True if it existed."""
+        entry = (
+            self.s.query(SenderBlocklist)
+            .filter_by(account_email=account_email, sender_email=sender_email)
+            .first()
+        )
+        if not entry:
+            return False
+        self.s.delete(entry)
+        self.s.commit()
+        return True
+
+    def list_all(self, account_email: str) -> list[SenderBlocklist]:
+        return (
+            self.s.query(SenderBlocklist)
+            .filter_by(account_email=account_email)
+            .order_by(SenderBlocklist.created_at.desc())
+            .all()
+        )
+
+    def blocked_emails(self, account_email: str) -> set[str]:
+        """Return the set of blocked sender email addresses for fast membership tests."""
+        rows = (
+            self.s.query(SenderBlocklist.sender_email).filter_by(account_email=account_email).all()
+        )
+        return {r.sender_email for r in rows}
