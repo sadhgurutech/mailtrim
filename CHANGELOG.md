@@ -7,6 +7,15 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Added
+- `--scope anywhere` flag on `stats`, `purge`, and `sync` — scans all mail
+  (`in:anywhere -in:trash -in:spam`), not just inbox. Surfaces hidden bloat
+  in archived, sent, and all-mail folders. Most storage waste is not in inbox.
+
+---
+
 ## [0.1.0] — 2026-04-05
 
 ### Added

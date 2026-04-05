@@ -179,7 +179,8 @@ mailtrim stats --share
 
 ```bash
 mailtrim stats
-mailtrim stats --json   # machine-readable output
+mailtrim stats --scope anywhere   # scan all mail, not just inbox (archived, sent, etc.)
+mailtrim stats --json             # machine-readable output
 ```
 
 ### `purge` — Bulk delete by sender *(no AI needed)*
@@ -200,6 +201,7 @@ Scores are heuristics — the 30-day undo exists precisely because no heuristic 
 
 ```bash
 mailtrim purge                          # sort by email count (default)
+mailtrim purge --scope anywhere         # scan all mail, not just inbox
 mailtrim purge --sort oldest            # show oldest clutter first
 mailtrim purge --sort size              # largest senders first
 mailtrim purge --query "older_than:1y"  # custom query
@@ -208,10 +210,11 @@ mailtrim purge --permanent              # skip Trash — IRREVERSIBLE
 mailtrim purge --json                   # output sender list as JSON
 ```
 
-### `sync` — Pull inbox into local cache
+### `sync` — Pull mail into local cache
 
 ```bash
-mailtrim sync             # last 200 messages
+mailtrim sync                         # last 200 inbox messages
+mailtrim sync --scope anywhere        # sync all mail, not just inbox
 mailtrim sync --limit 500
 mailtrim sync --query "in:inbox is:unread"
 ```

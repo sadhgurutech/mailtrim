@@ -124,6 +124,11 @@ def stats(
     top_n: int = typer.Option(15, "--top", help="Number of top senders to display."),
     share: bool = typer.Option(False, "--share", help="Print a copyable share summary and exit."),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON (for scripting)."),
+    scope: str = typer.Option(
+        "inbox",
+        "--scope",
+        help="Mail scope to scan: 'inbox' (default) or 'anywhere' (includes archived, sent, all mail).",
+    ),
 ):
     """
     Inbox decision engine — reclaimable space, confidence-scored recommendations, top senders.
@@ -157,16 +162,23 @@ def stats(
         risk_tier_icon,
     )
 
+    if scope == "anywhere":
+        mail_query = "in:anywhere -in:trash -in:spam"
+        scope_label = "all mail"
+    else:
+        mail_query = "in:inbox"
+        scope_label = "inbox"
+
     scan_start = _time.time()
     client = _get_client()
 
     with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as p:
-        t = p.add_task("Scanning inbox…", total=None)
+        t = p.add_task(f"Scanning {scope_label}…", total=None)
         profile = client.get_profile()
         p.update(t, description="Fetching top senders…")
         groups = fetch_sender_groups(
             client,
-            query="in:inbox",
+            query=mail_query,
             max_messages=2000,
             min_count=1,
             top_n=top_n,
@@ -493,11 +505,21 @@ def stats(
 
 @app.command()
 def sync(
-    limit: int = typer.Option(200, "--limit", "-n", help="Number of inbox messages to sync."),
+    limit: int = typer.Option(200, "--limit", "-n", help="Number of messages to sync."),
     query: str = typer.Option("in:inbox", "--query", "-q", help="Gmail query to sync."),
+    scope: str = typer.Option(
+        "inbox",
+        "--scope",
+        help="Mail scope: 'inbox' (default) or 'anywhere' (includes archived, sent, all mail).",
+    ),
 ):
-    """Sync inbox metadata to local database."""
+    """Sync mail metadata to local database."""
     from mailtrim.core.storage import EmailRecord, EmailRepo, get_session
+
+    if scope == "anywhere" and query == "in:inbox":
+        query = "in:anywhere -in:trash -in:spam"
+    elif scope == "anywhere":
+        query = f"in:anywhere -in:trash -in:spam {query}"
 
     client = _get_client()
     account_email = _get_account_email(client)
@@ -1245,6 +1267,11 @@ def purge(
     share: bool = typer.Option(
         False, "--share", help="Print a copyable share summary after deletion."
     ),
+    scope: str = typer.Option(
+        "inbox",
+        "--scope",
+        help="Mail scope to scan: 'inbox' (default) or 'anywhere' (includes archived, sent, all mail).",
+    ),
 ):
     """
     Show top email offenders and bulk-delete the ones you choose.
@@ -1254,6 +1281,7 @@ def purge(
 
     Examples:
       mailtrim purge
+      mailtrim purge --scope anywhere            # scan all mail, not just inbox
       mailtrim purge --domain linkedin.com --yes
       mailtrim purge --domain linkedin.com --keep 10
       mailtrim purge --domain linkedin.com --older-than 90
@@ -1270,12 +1298,22 @@ def purge(
     client = _get_client()
     account_email = _get_account_email(client)
 
+    # --scope prepends a scope filter to the query unless --query is explicitly set
+    if scope == "anywhere" and query == "category:promotions OR label:newsletters":
+        query = "in:anywhere -in:trash -in:spam"
+    elif scope == "anywhere":
+        query = f"in:anywhere -in:trash -in:spam {query}"
+
     # --domain builds a targeted query and routes to non-interactive mode
     if domain:
         effective_query = f"from:{domain}"
+        if scope == "anywhere":
+            effective_query = f"in:anywhere -in:trash -in:spam from:{domain}"
         if older_than:
             effective_query += f" older_than:{older_than}d"
         query = effective_query
+
+    scope_label = "all mail" if scope == "anywhere" else "inbox"
 
     # ── Step 1: scan and rank ────────────────────────────────────────────────
     with Progress(
@@ -1283,7 +1321,7 @@ def purge(
         TextColumn("[progress.description]{task.description}"),
         console=console,
     ) as progress:
-        t = progress.add_task(f"Scanning up to {max_scan} emails…", total=None)
+        t = progress.add_task(f"Scanning up to {max_scan} emails in {scope_label}…", total=None)
         valid_sorts = ("count", "oldest", "size")
         if sort_by not in valid_sorts:
             console.print(
