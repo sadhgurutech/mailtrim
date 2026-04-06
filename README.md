@@ -2,6 +2,7 @@
 
 **Delete years of Gmail clutter in minutes. Free, open-source. Core features need no API key.**
 
+[![PyPI](https://img.shields.io/pypi/v/mailtrim.svg)](https://pypi.org/project/mailtrim/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![CI](https://github.com/sadhgurutech/mailtrim/actions/workflows/ci.yml/badge.svg)](https://github.com/sadhgurutech/mailtrim/actions/workflows/ci.yml)
