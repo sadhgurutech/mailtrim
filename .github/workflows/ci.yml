@@ -38,3 +38,9 @@ jobs:
         env:
           # Tests use MockAIEngine — no real key needed
           ANTHROPIC_API_KEY: ""
+
+      - name: Build check
+        run: |
+          pip install build twine
+          python -m build
+          twine check dist/*
