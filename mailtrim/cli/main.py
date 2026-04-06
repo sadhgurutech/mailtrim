@@ -129,6 +129,11 @@ def stats(
         "--scope",
         help="Mail scope to scan: 'inbox' (default) or 'anywhere' (includes archived, sent, all mail).",
     ),
+    max_scan: int = typer.Option(
+        2000,
+        "--max-scan",
+        help="Max emails to scan (default 2000). Raise to 5000+ for large mailboxes.",
+    ),
 ):
     """
     Inbox decision engine — reclaimable space, confidence-scored recommendations, top senders.
@@ -139,6 +144,8 @@ def stats(
     Examples:
       mailtrim stats
       mailtrim stats --sort size
+      mailtrim stats --scope anywhere   # include archived and sent mail
+      mailtrim stats --max-scan 5000    # scan more of a large mailbox
       mailtrim stats --share   # get a copyable one-liner to share
     """
     import json as json_lib
@@ -179,7 +186,7 @@ def stats(
         groups = fetch_sender_groups(
             client,
             query=mail_query,
-            max_messages=2000,
+            max_messages=max_scan,
             min_count=1,
             top_n=top_n,
             sort_by=sort_by if sort_by in ("score", "count", "size", "oldest") else "score",
@@ -328,12 +335,23 @@ def stats(
         f"  [bold]{account_email}[/bold]\n"
         f"  [dim]Total messages:[/dim]  {total_messages:,}   "
         f"[dim]Total threads:[/dim] {total_threads:,}\n"
-        f"  [dim]Inbox scanned:[/dim]   {insights.total_scanned:,} messages  ·  "
+        f"  [dim]{scope_label.capitalize()} scanned:[/dim]  {insights.total_scanned:,} messages  ·  "
         f"[bold]{insights.total_size_mb} MB[/bold]\n"
         f"  [dim]Unique senders:[/dim]  {insights.unique_senders}   "
         f"[dim]Unique domains:[/dim] {insights.unique_domains}   "
         f"[dim]Oldest email:[/dim] {insights.oldest_email_days}d ago"
     )
+    if insights.total_scanned >= max_scan:
+        console.print(
+            f"\n  [yellow]⚠ Scan capped at {max_scan:,} — your mailbox may have more. "
+            f"Run [bold]mailtrim stats --max-scan 5000[/bold] to analyze further.[/yellow]"
+        )
+    if scope == "inbox" and total_messages > insights.total_scanned * 3:
+        console.print(
+            f"\n  [dim]💡 {total_messages:,} total messages in your account vs "
+            f"{insights.total_scanned:,} scanned. Run [bold]mailtrim stats --scope anywhere[/bold] "
+            f"to include archived and sent mail.[/dim]"
+        )
     console.print()
 
     # ── Section 2: Key Insights ───────────────────────────────────────────────
@@ -1373,7 +1391,25 @@ def purge(
 
     if not groups:
         console.print("[yellow]No matching emails found.[/yellow]")
+        if scope == "inbox":
+            console.print(
+                "[dim]Tip: run [bold]mailtrim purge --scope anywhere[/bold] "
+                "to include archived and sent mail.[/dim]"
+            )
         return
+
+    # Coverage hints — shown once, before the table
+    scanned_count = sum(g.count for g in groups)
+    if scanned_count >= max_scan:
+        console.print(
+            f"[yellow]⚠ Scan capped at {max_scan:,} emails. "
+            f"Run with [bold]--max-scan 5000[/bold] to surface more senders.[/yellow]"
+        )
+    if scope == "inbox":
+        console.print(
+            "[dim]Scoped to inbox — use [bold]--scope anywhere[/bold] "
+            "to include archived and sent mail.[/dim]"
+        )
 
     # ── Domain mode: --keep N trims to last N per sender ─────────────────────
     if domain and keep is not None:
