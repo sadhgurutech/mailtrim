@@ -134,6 +134,11 @@ def stats(
         "--max-scan",
         help="Max emails to scan (default 2000). Raise to 5000+ for large mailboxes.",
     ),
+    use_ai: bool = typer.Option(
+        False,
+        "--ai",
+        help="Enrich sender insights with local AI (requires llama.cpp at localhost:8080).",
+    ),
 ):
     """
     Inbox decision engine — reclaimable space, confidence-scored recommendations, top senders.
@@ -193,8 +198,9 @@ def stats(
         )
         p.update(t, description="Scoring recommendations…")
         domain_groups = group_by_domain(groups)
+        domain_map_lookup = {d.domain: d for d in domain_groups}
         insights = generate_insights(groups, domain_groups)
-        recommendations = generate_recommendations(groups, top_n=3)
+        recommendations = generate_recommendations(groups, top_n=3, domain_map=domain_map_lookup)
         win = quick_win(recommendations)
         total_reclaimable = reclaimable_mb(recommendations)
         reclaim_pct = reclaimable_pct(total_reclaimable, insights.total_size_mb)
@@ -206,7 +212,10 @@ def stats(
 
     # ── Share mode ────────────────────────────────────────────────────────────
     if share:
-        rec_email_count = sum(rec.sender.count for rec in recommendations)
+        rec_email_count = sum(
+            (domain_map_lookup.get(rec.sender.domain) or rec.sender).count
+            for rec in recommendations
+        )
         viral = generate_viral_share_text(
             freed_mb=total_reclaimable,
             sender_count=len(recommendations),
@@ -400,7 +409,10 @@ def stats(
         safety = confidence_safety_label(win.confidence)
         icon = risk_tier_icon(win.confidence)
         reason = confidence_reason(win.sender)
-        time_est = format_time_estimate(win.sender.count)
+        _win_domain = domain_map_lookup.get(win.sender.domain)
+        _win_count = _win_domain.count if _win_domain else win.sender.count
+        _win_size_mb = _win_domain.total_size_mb if _win_domain else win.sender.total_size_mb
+        time_est = format_time_estimate(_win_count)
         safety_color = (
             "green" if win.confidence >= 70 else "yellow" if win.confidence >= 40 else "red"
         )
@@ -416,7 +428,7 @@ def stats(
         console.print(
             Panel(
                 f"[bold]{win.sender.display_name[:45]}[/bold]  "
-                f"[dim]{win.sender.count} emails · {win.sender.total_size_mb} MB[/dim]\n\n"
+                f"[dim]{_win_count} emails · {_win_size_mb} MB[/dim]\n\n"
                 + savings_line
                 + f"\n  [cyan]{first_action.command}[/cyan]\n\n"
                 f"  {icon} Confidence: [bold]{win.confidence}%[/bold]  ·  "
@@ -475,22 +487,95 @@ def stats(
     # ── Section 4: Recommended Actions ───────────────────────────────────────
     console.rule("[bold cyan]=== RECOMMENDED ACTIONS ===", align="left")
 
+    # Optional local-AI enrichment — only for senders where AI adds signal.
+    ai_insights: dict[str, dict] = {}
+    if use_ai and recommendations:
+        from mailtrim.core.llm import (
+            CATEGORY_ICON,
+            analyze_batch,
+            confidence_delta,
+            should_analyze,
+        )
+
+        eligible = [
+            rec for rec in recommendations
+            if should_analyze(rec.confidence, rec.sender.count, rec.sender.sender_email)
+        ]
+        if eligible:
+            with console.status("[dim][AI] Analyzing senders via local model…[/dim]"):
+                texts = ["\n".join(rec.sender.sample_subjects) for rec in eligible]
+                keys = [rec.sender.sender_email for rec in eligible]
+                results = analyze_batch(texts, cache_keys=keys)
+            for rec, result in zip(eligible, results):
+                ai_insights[rec.sender.sender_email] = result
+
+        if ai_insights:
+            from mailtrim.core.llm import apply_impact_nudge
+            apply_impact_nudge(groups, ai_insights)
+
     if recommendations:
+        from mailtrim.core.llm import format_ai_line  # always available
+
         for i, rec in enumerate(recommendations, 1):
             g = rec.sender
-            safety = confidence_safety_label(rec.confidence)
+            _rec_domain = domain_map_lookup.get(g.domain)
+            _rec_count = _rec_domain.count if _rec_domain else g.count
+            _rec_size_mb = _rec_domain.total_size_mb if _rec_domain else g.total_size_mb
+            ai = ai_insights.get(g.sender_email, {})
+            rule_conf = rec.confidence
+
+            # Compute adjusted confidence without mutating rec.confidence.
+            delta = confidence_delta(ai) if (use_ai and ai) else 0
+            display_confidence = max(0, min(100, rule_conf + delta))
+
+            safety = confidence_safety_label(display_confidence)
             safety_color = (
-                "green" if rec.confidence >= 70 else "yellow" if rec.confidence >= 40 else "red"
+                "green"
+                if display_confidence >= 70
+                else "yellow"
+                if display_confidence >= 40
+                else "red"
             )
-            icon = risk_tier_icon(rec.confidence)
-            reason = confidence_reason(g)
-            reason_hint = f" [dim]({reason})[/dim]" if reason != "limited signals" else ""
+            icon = risk_tier_icon(display_confidence)
+
+            # Reason hint: prefer AI category phrase, fall back to rule-based.
+            if use_ai and ai:
+                ai_cat = ai.get("category", "")
+                _cat_phrase = {
+                    "promo": "promo pattern",
+                    "spam": "spam signals",
+                    "update": "automated updates",
+                    "important": "important mail",
+                }.get(ai_cat, "")
+                rule_reason = confidence_reason(g)
+                if _cat_phrase and rule_reason != "limited signals":
+                    reason_text = f"{_cat_phrase} + {rule_reason}"[:50]
+                elif _cat_phrase:
+                    reason_text = _cat_phrase
+                else:
+                    reason_text = rule_reason
+            else:
+                reason_text = confidence_reason(g)
+            reason_hint = f" [dim]({reason_text})[/dim]" if reason_text != "limited signals" else ""
+
+            # Confidence line: show arrow + delta when AI adjusted it.
+            if use_ai and ai and delta != 0:
+                sign = "+" if delta > 0 else ""
+                conf_str = (
+                    f"[dim]{rule_conf}%[/dim] → [bold]{display_confidence}%[/bold] "
+                    f"[dim]({sign}{delta}% AI)[/dim]"
+                )
+            else:
+                conf_str = f"[bold]{display_confidence}%[/bold]"
+
             console.print(
                 f"  [bold]{i}. {g.display_name[:40]}[/bold]  "
-                f"[dim]{g.count} emails · {g.total_size_mb} MB · {g.age_str}[/dim]\n"
-                f"  {icon} Confidence: [bold]{rec.confidence}%[/bold]  "
+                f"[dim]{_rec_count} emails · {_rec_size_mb} MB · {g.age_str}[/dim]\n"
+                f"  {icon} Confidence: {conf_str}  "
                 f"[{safety_color}]{safety}[/{safety_color}]{reason_hint}"
             )
+            if use_ai and ai:
+                console.print(f"  [dim]{format_ai_line(ai)}[/dim]")
             for action in rec.actions:
                 savings_str = (
                     f"[green]~{action.savings_mb} MB freed[/green]"
@@ -498,7 +583,7 @@ def stats(
                     else "[dim]no storage change[/dim]"
                 )
                 tilde = "" if action.savings_exact else "~"
-                time_est = format_time_estimate(g.count)
+                time_est = format_time_estimate(_rec_count)
                 console.print(
                     f"    [yellow]→ {action.label}[/yellow]  "
                     f"{tilde}{savings_str}  [dim]takes {time_est}[/dim]"
@@ -607,8 +692,6 @@ def triage(
 
     client = _get_client()
     account_email = _get_account_email(client)
-    ai = _get_ai()
-    detector = AvoidanceDetector(client, account_email, ai)
 
     with console.status("Fetching inbox..."):
         ids = client.list_message_ids(query="in:inbox is:unread", max_results=limit)
@@ -617,9 +700,38 @@ def triage(
             return
         messages = client.get_messages_batch(ids)
 
-    _print_ai_data_notice(f"{len(messages)} email subjects + snippets (≤300 chars each)")
-    with console.status(f"Classifying {len(messages)} messages with AI..."):
-        classified = ai.classify_emails(messages)
+    # Try Anthropic first; fall back to local LLM when key is absent or invalid.
+    # Use AIEngine directly (not _get_ai()) so a missing key raises ValueError
+    # instead of silently returning MockAIEngine.
+    classified = None
+    try:
+        import anthropic
+        from mailtrim.core.ai_engine import AIEngine
+
+        ai = AIEngine()  # raises ValueError if ANTHROPIC_API_KEY is unset
+        _print_ai_data_notice(f"{len(messages)} email subjects + snippets (≤300 chars each)")
+        with console.status(f"Classifying {len(messages)} messages with Anthropic AI..."):
+            classified = ai.classify_emails(messages)
+    except (ValueError, anthropic.AuthenticationError, anthropic.RateLimitError,
+            anthropic.APIStatusError, anthropic.APIConnectionError) as exc:
+        # ValueError              → ANTHROPIC_API_KEY not set
+        # AuthenticationError     → key present but invalid
+        # RateLimitError          → quota exceeded, fall back gracefully
+        # APIStatusError          → server-side error (5xx)
+        # APIConnectionError      → network unreachable
+        reason = "no API key set" if isinstance(exc, ValueError) else str(exc)
+        console.print(
+            f"[yellow]Anthropic unavailable ({reason}) — falling back to local AI "
+            f"(localhost:8080).[/yellow]"
+        )
+        from mailtrim.core.llm import classify_for_triage
+        from mailtrim.core.mock_ai import MockAIEngine
+
+        with console.status(f"Classifying {len(messages)} messages with local AI..."):
+            classified = classify_for_triage(messages)
+        ai = MockAIEngine()  # avoidance detector only calls record_view here
+
+    detector = AvoidanceDetector(client, account_email, ai)
 
     # Record views for avoidance tracking
     for msg in messages:
@@ -1019,6 +1131,8 @@ def unsubscribe(
 
     messages: list = []
     if sender:
+        from mailtrim.core.validation import validate_sender_email
+        sender = validate_sender_email(sender)
         with console.status(f"Finding emails from {sender}..."):
             ids = client.list_message_ids(query=f"from:{sender}", max_results=1)
             if ids:
@@ -1241,7 +1355,9 @@ def _print_cleanup_complete(
         body = (
             f"Moved [bold]{email_count:,} emails[/bold] to Trash  ·  "
             f"freed [bold green]~{freed_mb} MB[/bold green]  ·  took [bold]{elapsed_seconds}s[/bold]\n"
-            f"Senders: [dim]{names_str}[/dim]\n" + undo_hint
+            f"Senders: [dim]{names_str}[/dim]\n"
+            f"[dim]Gmail Trash shows threads, not messages — visible count there will be lower.[/dim]"
+            + undo_hint
         )
         border = "green"
         title = "🎉  Cleanup Complete"
@@ -1308,6 +1424,11 @@ def purge(
         "--scope",
         help="Mail scope to scan: 'inbox' (default) or 'anywhere' (includes archived, sent, all mail).",
     ),
+    use_ai: bool = typer.Option(
+        False,
+        "--ai",
+        help="Adjust confidence scores with local AI signal (requires llama.cpp at localhost:8080).",
+    ),
 ):
     """
     Show top email offenders and bulk-delete the ones you choose.
@@ -1327,12 +1448,19 @@ def purge(
     """
     import time as _time
 
-    from mailtrim.core.sender_stats import fetch_sender_groups
+    from mailtrim.core.sender_stats import compute_confidence_score, fetch_sender_groups
     from mailtrim.core.storage import UndoLogRepo, get_session
     from mailtrim.core.unsubscribe import UnsubscribeEngine
+    from mailtrim.core.validation import validate_domain, validate_older_than
 
     client = _get_client()
     account_email = _get_account_email(client)
+
+    # Validate user-supplied values before embedding them in Gmail queries.
+    if domain:
+        domain = validate_domain(domain)
+    if older_than is not None:
+        older_than = validate_older_than(older_than)
 
     # --scope prepends a scope filter to the query unless --query is explicitly set
     if scope == "anywhere" and query == "category:promotions OR label:newsletters":
@@ -1340,11 +1468,13 @@ def purge(
     elif scope == "anywhere":
         query = f"in:anywhere -in:trash -in:spam {query}"
 
-    # --domain builds a targeted query and routes to non-interactive mode
+    # --domain builds a targeted query and routes to non-interactive mode.
+    # Scope filter is always applied so the count matches what stats showed.
     if domain:
-        effective_query = f"from:{domain}"
         if scope == "anywhere":
             effective_query = f"in:anywhere -in:trash -in:spam from:{domain}"
+        else:
+            effective_query = f"in:inbox from:{domain}"
         if older_than:
             effective_query += f" older_than:{older_than}d"
         query = effective_query
@@ -1469,6 +1599,28 @@ def purge(
             f"\n[bold]Domain target:[/bold] [cyan]{domain}[/cyan]  "
             f"[dim]{total_msgs} emails · {total_mb} MB{keep_note}[/dim]"
         )
+
+        # Show a compact per-sender breakdown so the user sees exactly which
+        # addresses (including subdomains) will be affected before confirming.
+        # Gmail's from: query is a suffix match, so mail.domain.com is included.
+        unique_domains = sorted({g.domain for g in groups})
+        if len(unique_domains) > 1:
+            console.print(
+                f"[dim]  Includes subdomains: {', '.join(unique_domains)}[/dim]"
+            )
+        for g in sorted(groups, key=lambda x: x.count, reverse=True)[:10]:
+            size_str = (
+                f"{g.total_size_mb} MB" if g.total_size_mb >= 0.1
+                else f"{g.total_size_bytes // 1024} KB"
+            )
+            console.print(
+                f"  [dim]{g.sender_email}[/dim]  "
+                f"[red]{g.count}[/red] emails · {size_str}"
+            )
+        if len(groups) > 10:
+            console.print(f"  [dim]… and {len(groups) - 10} more sender(s)[/dim]")
+        console.print()
+
         selected = groups
         sel_msgs = total_msgs
         sel_mb = total_mb
@@ -1504,6 +1656,34 @@ def purge(
         return
 
     # ── Step 2: render offender table ────────────────────────────────────────
+
+    # Optional local-AI enrichment — only for senders where AI adds signal.
+    purge_ai_insights: dict[str, dict] = {}
+    if use_ai:
+        from mailtrim.core.llm import (
+            CATEGORY_ICON,
+            analyze_batch,
+            confidence_delta,
+            should_analyze,
+        )
+
+        eligible_groups = [
+            g for g in groups
+            if should_analyze(compute_confidence_score(g), g.count, g.sender_email)
+        ]
+        if eligible_groups:
+            with console.status("[dim][AI] Analyzing senders via local model…[/dim]"):
+                texts = ["\n".join(g.sample_subjects) for g in eligible_groups]
+                keys = [g.sender_email for g in eligible_groups]
+                ai_results = analyze_batch(texts, cache_keys=keys)
+            purge_ai_insights = {
+                g.sender_email: r for g, r in zip(eligible_groups, ai_results)
+            }
+
+        if purge_ai_insights:
+            from mailtrim.core.llm import apply_impact_nudge
+            apply_impact_nudge(groups, purge_ai_insights)
+
     console.print()
     table = Table(
         title=f"Top Email Offenders  [dim]({total_msgs} emails · {total_mb} MB)[/dim]",
@@ -1527,6 +1707,8 @@ def purge(
     table.add_column(date_header, width=14)
     table.add_column("Sample subject", min_width=30)
     table.add_column("Unsub?", width=7)
+    if use_ai:
+        table.add_column("AI", width=12)
 
     for i, g in enumerate(groups, 1):
         name = g.display_name[:30]
@@ -1546,7 +1728,28 @@ def purge(
 
         subject = g.sample_subjects[0][:55] if g.sample_subjects else "—"
         unsub = "[green]yes[/green]" if g.has_unsubscribe else "[dim]no[/dim]"
-        table.add_row(str(i), name, str(g.count), size_str, date_str, subject, unsub)
+
+        if use_ai:
+            ai = purge_ai_insights.get(g.sender_email, {})
+            if ai:
+                from mailtrim.core.llm import CATEGORY_ICON as _ICON
+
+                cat = ai.get("category", "")
+                action = ai.get("action", "")
+                rule_conf = compute_confidence_score(g)
+                delta = confidence_delta(ai)
+                adj_conf = max(0, min(100, rule_conf + delta))
+                sign = "+" if delta > 0 else ""
+                delta_str = f"{sign}{delta}%" if delta != 0 else ""
+                ai_cell = (
+                    f"{_ICON.get(cat, '')} {cat} → {action}\n"
+                    f"[dim]{rule_conf}→{adj_conf}% {delta_str}[/dim]"
+                )
+            else:
+                ai_cell = "[dim]—[/dim]"
+            table.add_row(str(i), name, str(g.count), size_str, date_str, subject, unsub, ai_cell)
+        else:
+            table.add_row(str(i), name, str(g.count), size_str, date_str, subject, unsub)
 
     console.print(table)
 

@@ -581,9 +581,17 @@ class Recommendation:
     confidence: int = 0  # 0–100; how safe this deletion is
 
 
-def generate_recommendations(groups: list[SenderGroup], top_n: int = 3) -> list[Recommendation]:
+def generate_recommendations(
+    groups: list[SenderGroup],
+    top_n: int = 3,
+    domain_map: dict[str, DomainGroup] | None = None,
+) -> list[Recommendation]:
     """
     For the top N senders by impact score, produce up to 2 concrete actions each.
+
+    domain_map: optional {domain: DomainGroup} used so that count/size thresholds
+    and savings figures reflect the full domain scope that ``purge --domain`` targets,
+    not just the single sender address that stats grouped by.
 
     Decision logic (determines which actions are shown):
     - High-size sender    → Delete all (exact savings) + Delete older than 90d
@@ -602,10 +610,14 @@ def generate_recommendations(groups: list[SenderGroup], top_n: int = 3) -> list[
 
     for g in by_score[:top_n]:
         actions: list[Action] = []
-        size_mb = g.total_size_mb
-        count = g.count
         domain = g.domain
-        days = g.inbox_days
+
+        # Use domain-level totals when available so savings and thresholds
+        # match what `purge --domain` will actually delete.
+        d = domain_map.get(domain) if domain_map else None
+        size_mb = d.total_size_mb if d else g.total_size_mb
+        count = d.count if d else g.count
+        days = g.inbox_days  # sender-level age is the right signal here
 
         # Action 1: always offer "delete all" if there's meaningful size
         if size_mb >= 1:

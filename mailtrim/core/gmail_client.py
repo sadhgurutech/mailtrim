@@ -151,9 +151,9 @@ def authenticate(
     if token_path.exists():
         try:
             creds = Credentials.from_authorized_user_file(str(token_path), scopes)
-        except Exception:
-            # Corrupted token — delete and re-authenticate
-            logger.warning("Token file is corrupted, re-authenticating.")
+        except Exception as exc:
+            # Corrupted or unreadable token — delete and re-authenticate.
+            logger.warning("Token file is corrupted (%s), re-authenticating.", exc)
             token_path.unlink(missing_ok=True)
             creds = None
 
@@ -161,8 +161,8 @@ def authenticate(
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
-            except Exception:
-                logger.warning("Token refresh failed, re-authenticating.")
+            except Exception as exc:
+                logger.warning("Token refresh failed (%s), re-authenticating.", exc)
                 token_path.unlink(missing_ok=True)
                 creds = None
 
@@ -172,6 +172,15 @@ def authenticate(
                     f"OAuth credentials file not found at {credentials_path}.\n"
                     "Download it from Google Cloud Console → APIs & Services → Credentials.\n"
                     "See README.md for step-by-step setup."
+                )
+            # Restrict the credentials file too — it contains the OAuth client secret.
+            # Do this before reading so the secret is protected even on first run.
+            try:
+                credentials_path.chmod(0o600)
+            except OSError:
+                logger.warning(
+                    "Could not set permissions on %s — ensure only you can read it.",
+                    credentials_path,
                 )
             flow = InstalledAppFlow.from_client_secrets_file(str(credentials_path), scopes)
             creds = flow.run_local_server(port=0)
