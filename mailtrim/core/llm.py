@@ -11,12 +11,11 @@ Usage:
 
 from __future__ import annotations
 
-import json
 import logging
-import urllib.error
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING
+
+from mailtrim.core.ai.client import AIClient, get_ai_client
 
 logger = logging.getLogger(__name__)
 
@@ -26,14 +25,13 @@ if TYPE_CHECKING:
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-_ENDPOINT = "http://localhost:8080/completion"
-_TIMEOUT = 30  # seconds — CPU-only llama.cpp needs time to evaluate the prompt
+# Default client — llama.cpp at localhost:8080.
+# Override via analyze_email(ai_client=...) or replace _default_client at startup.
+_default_client: AIClient = get_ai_client(backend="llama")
 
 # Prompt uses TinyLlama/llama.cpp chat template so the model generates a
 # completion rather than echoing the instructions back.
-_SYSTEM_PROMPT = (
-    "You are an email classifier. Only output S/C/A lines, nothing else."
-)
+_SYSTEM_PROMPT = "You are an email classifier. Only output S/C/A lines, nothing else."
 
 # Few-shot examples teach the format without relying on instruction-following.
 _FEW_SHOT = (
@@ -80,14 +78,21 @@ CATEGORY_ICON: dict[str, str] = {
 # ── Core function ─────────────────────────────────────────────────────────────
 
 
-def analyze_email(text: str, cache_key: str = "") -> dict:
+def analyze_email(
+    text: str,
+    cache_key: str = "",
+    ai_client: AIClient | None = None,
+) -> dict:
     """
-    Analyze email text via the local llama.cpp server.
+    Analyze email text via the configured local AI backend.
 
     Args:
         text:      Subject + snippet. Auto-truncated to 600 chars.
         cache_key: Optional sender email / domain for result caching.
                    Pass "" to skip caching.
+        ai_client: Override the module-level default client.
+                   Pass an OllamaClient or LlamaCppClient to switch backends
+                   without changing global state.
 
     Returns:
         On success: {"summary": str, "category": str, "action": str}
@@ -100,41 +105,12 @@ def analyze_email(text: str, cache_key: str = "") -> dict:
 
     content = text.strip()[:600]
     prompt = (
-        f"<|system|>\n{_SYSTEM_PROMPT}</s>\n"
-        f"{_FEW_SHOT}"
-        f"<|user|>\n{content}</s>\n"
-        f"<|assistant|>\n"
+        f"<|system|>\n{_SYSTEM_PROMPT}</s>\n{_FEW_SHOT}<|user|>\n{content}</s>\n<|assistant|>\n"
     )
 
-    payload = json.dumps({
-        "prompt": prompt,
-        "n_predict": 60,
-        "temperature": 0.1,
-        "grammar": _GRAMMAR,
-        "stop": ["</s>", "<|user|>", "<|system|>"],
-    }).encode("utf-8")
-
-    try:
-        req = urllib.request.Request(
-            _ENDPOINT,
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        response_text = data.get("content", "").strip()
-    except urllib.error.URLError as exc:
-        # Server offline or unreachable — expected when llama.cpp is not running.
-        logger.debug("Local LLM unavailable (URLError): %s", exc)
-        return {}
-    except json.JSONDecodeError as exc:
-        # Unexpected: server returned non-JSON.  Log at WARNING so the operator sees it.
-        logger.warning("Local LLM returned invalid JSON: %s", exc)
-        return {}
-    except Exception as exc:
-        # Catch-all for timeouts, SSL errors, etc. — silenced but logged.
-        logger.debug("Local LLM request failed (%s): %s", type(exc).__name__, exc)
+    client = ai_client or _default_client
+    response_text = client.generate(prompt)
+    if not response_text:
         return {}
 
     result = _parse_response(response_text)
@@ -147,6 +123,7 @@ def analyze_batch(
     texts: list[str],
     cache_keys: list[str] | None = None,
     max_workers: int = 4,
+    ai_client: AIClient | None = None,
 ) -> list[dict]:
     """
     Analyze multiple email texts in parallel (bounded thread pool).
@@ -155,6 +132,7 @@ def analyze_batch(
         texts:       Email content strings (one per sender).
         cache_keys:  Optional per-entry keys for result caching (same length as texts).
         max_workers: Thread concurrency cap.
+        ai_client:   Override the module-level default client.
 
     Results are returned in the same order as ``texts``.
     Individual failures produce {} entries, not exceptions.
@@ -163,7 +141,8 @@ def analyze_batch(
     results: list[dict] = [{}] * len(texts)
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {
-            pool.submit(analyze_email, t, k): i for i, (t, k) in enumerate(zip(texts, keys))
+            pool.submit(analyze_email, t, k, ai_client): i
+            for i, (t, k) in enumerate(zip(texts, keys))
         }
         for fut in as_completed(futures):
             idx = futures[fut]
@@ -195,8 +174,28 @@ def set_cached(key: str, result: dict) -> None:
 
 # Words that carry no signal when used as the entire "reason".
 _FILLER = frozenset(
-    {"the", "a", "an", "is", "it", "of", "in", "on", "at", "to", "for",
-     "and", "or", "with", "your", "you", "we", "our", "this", "that"}
+    {
+        "the",
+        "a",
+        "an",
+        "is",
+        "it",
+        "of",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "and",
+        "or",
+        "with",
+        "your",
+        "you",
+        "we",
+        "our",
+        "this",
+        "that",
+    }
 )
 
 
@@ -337,17 +336,17 @@ def _parse_response(text: str) -> dict:
 # The local model uses a simpler 4-way split; we widen it to match ClassifiedEmail.
 _TRIAGE_MAP: dict[str, tuple[str, str, str, bool]] = {
     #           category         priority  suggested_action  requires_reply
-    "important": ("action_required", "high",   "reply",          True),
-    "promo":     ("newsletter",      "low",    "unsubscribe",     False),
-    "update":    ("notification",    "low",    "archive",         False),
-    "spam":      ("spam",            "low",    "delete",          False),
+    "important": ("action_required", "high", "reply", True),
+    "promo": ("newsletter", "low", "unsubscribe", False),
+    "update": ("notification", "low", "archive", False),
+    "spam": ("spam", "low", "delete", False),
 }
 
 # When local LLM says "keep" but category implies deletable, trust the category.
 # "archive" and "delete" are mapped directly.
 _ACTION_OVERRIDE: dict[str, str] = {
     "archive": "archive",
-    "delete":  "delete",
+    "delete": "delete",
 }
 
 
@@ -371,9 +370,7 @@ def classify_for_triage(messages: list[Message]) -> list[ClassifiedEmail]:
     mock = MockAIEngine()
 
     texts = [
-        f"From: {m.sender_name or m.sender_email}\n"
-        f"Subject: {m.headers.subject}\n"
-        f"{m.snippet[:500]}"
+        f"From: {m.sender_name or m.sender_email}\nSubject: {m.headers.subject}\n{m.snippet[:500]}"
         for m in messages
     ]
     raw_results = analyze_batch(texts, max_workers=4)

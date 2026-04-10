@@ -15,9 +15,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from mailtrim.config import get_settings
+
+if TYPE_CHECKING:
+    from mailtrim.core.providers.base import EmailProvider
 from mailtrim.core.gmail_client import GmailClient, Message
 
 SortKey = Literal["score", "count", "oldest", "size"]
@@ -725,7 +728,7 @@ def quick_win(recs: list[Recommendation]) -> Recommendation | None:
 
 
 def fetch_sender_groups(
-    client: GmailClient,
+    client: "GmailClient | EmailProvider",
     query: str = "category:promotions OR label:newsletters",
     max_messages: int = 2000,
     min_count: int = 2,
@@ -814,23 +817,24 @@ class _Accumulator:
         )
 
 
-def _fetch_metadata_batch(client: GmailClient, ids: list[str]) -> list[Message]:
+def _fetch_metadata_batch(client: "GmailClient | EmailProvider", ids: list[str]) -> list[Message]:
     """
     Fetch message metadata in batches.
-    Uses client._fetch_batch() which correctly avoids the closure-over-loop-variable bug.
+
+    Delegates to client.get_messages_metadata() so both GmailClient (legacy)
+    and EmailProvider implementations (Gmail, IMAP) work transparently.
+    GmailClient exposes get_messages_metadata via GmailProvider; callers that
+    still pass a raw GmailClient fall back to the private _fetch_batch path.
     """
+    # EmailProvider path (GmailProvider, IMAPProvider)
+    if hasattr(client, "get_messages_metadata"):
+        return client.get_messages_metadata(ids)
+
+    # Legacy GmailClient path — keep working without any changes to call sites
     settings = get_settings()
     results: list[Message] = []
-
     from mailtrim.core.gmail_client import _chunks
 
     for chunk in _chunks(ids, settings.gmail_batch_size):
-        # Delegate to the client's tested batch helper rather than duplicating the pattern
-        batch_msgs = client._fetch_batch(
-            chunk,
-            format="metadata",
-            # metadata headers are set inside _fetch_batch via the service call
-        )
-        results.extend(batch_msgs)
-
+        results.extend(client._fetch_batch(chunk, format="metadata"))
     return results

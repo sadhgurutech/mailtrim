@@ -36,6 +36,34 @@ def _get_client():
     return GmailClient(creds)
 
 
+def _get_provider(
+    provider: str = "gmail",
+    imap_server: str = "",
+    imap_user: str = "",
+    imap_password: str = "",
+    imap_port: int = 993,
+):
+    """Construct the EmailProvider selected by --provider."""
+    from mailtrim.core.providers.factory import get_provider
+
+    return get_provider(
+        provider=provider,
+        imap_server=imap_server,
+        imap_user=imap_user,
+        imap_password=imap_password,
+        imap_port=imap_port,
+    )
+
+
+def _get_ai_client_opt(backend: str, url: str, model: str):
+    """Return an AIClient override, or None to use the llm.py default."""
+    if backend == "llama" and not url:
+        return None  # default client already configured in llm.py
+    from mailtrim.core.ai.client import get_ai_client
+
+    return get_ai_client(backend=backend, url=url, model=model)
+
+
 def _get_ai():
     from mailtrim.core.mock_ai import get_ai_engine
 
@@ -139,6 +167,23 @@ def stats(
         "--ai",
         help="Enrich sender insights with local AI (requires llama.cpp at localhost:8080).",
     ),
+    provider: str = typer.Option(
+        "gmail",
+        "--provider",
+        help="Email provider: gmail (default) or imap.",
+    ),
+    imap_server: str = typer.Option("", "--imap-server", help="IMAP server hostname."),
+    imap_user: str = typer.Option("", "--imap-user", help="IMAP login username."),
+    imap_password: str = typer.Option(
+        "", "--imap-password", help="IMAP app password.", hide_input=True
+    ),
+    ai_backend: str = typer.Option(
+        "llama",
+        "--ai-backend",
+        help="Local AI backend: llama (llama.cpp, default) or ollama.",
+    ),
+    ai_url: str = typer.Option("", "--ai-url", help="Override local AI server URL."),
+    ai_model: str = typer.Option("phi3", "--ai-model", help="Model name (Ollama only)."),
 ):
     """
     Inbox decision engine — reclaimable space, confidence-scored recommendations, top senders.
@@ -182,7 +227,12 @@ def stats(
         scope_label = "inbox"
 
     scan_start = _time.time()
-    client = _get_client()
+    client = _get_provider(
+        provider=provider,
+        imap_server=imap_server,
+        imap_user=imap_user,
+        imap_password=imap_password,
+    )
 
     with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as p:
         t = p.add_task(f"Scanning {scope_label}…", total=None)
@@ -491,26 +541,28 @@ def stats(
     ai_insights: dict[str, dict] = {}
     if use_ai and recommendations:
         from mailtrim.core.llm import (
-            CATEGORY_ICON,
             analyze_batch,
             confidence_delta,
             should_analyze,
         )
 
         eligible = [
-            rec for rec in recommendations
+            rec
+            for rec in recommendations
             if should_analyze(rec.confidence, rec.sender.count, rec.sender.sender_email)
         ]
         if eligible:
             with console.status("[dim][AI] Analyzing senders via local model…[/dim]"):
                 texts = ["\n".join(rec.sender.sample_subjects) for rec in eligible]
                 keys = [rec.sender.sender_email for rec in eligible]
-                results = analyze_batch(texts, cache_keys=keys)
+                _ai_client_override = _get_ai_client_opt(ai_backend, ai_url, ai_model)
+                results = analyze_batch(texts, cache_keys=keys, ai_client=_ai_client_override)
             for rec, result in zip(eligible, results):
                 ai_insights[rec.sender.sender_email] = result
 
         if ai_insights:
             from mailtrim.core.llm import apply_impact_nudge
+
             apply_impact_nudge(groups, ai_insights)
 
     if recommendations:
@@ -706,14 +758,20 @@ def triage(
     classified = None
     try:
         import anthropic
+
         from mailtrim.core.ai_engine import AIEngine
 
         ai = AIEngine()  # raises ValueError if ANTHROPIC_API_KEY is unset
         _print_ai_data_notice(f"{len(messages)} email subjects + snippets (≤300 chars each)")
         with console.status(f"Classifying {len(messages)} messages with Anthropic AI..."):
             classified = ai.classify_emails(messages)
-    except (ValueError, anthropic.AuthenticationError, anthropic.RateLimitError,
-            anthropic.APIStatusError, anthropic.APIConnectionError) as exc:
+    except (
+        ValueError,
+        anthropic.AuthenticationError,
+        anthropic.RateLimitError,
+        anthropic.APIStatusError,
+        anthropic.APIConnectionError,
+    ) as exc:
         # ValueError              → ANTHROPIC_API_KEY not set
         # AuthenticationError     → key present but invalid
         # RateLimitError          → quota exceeded, fall back gracefully
@@ -1132,6 +1190,7 @@ def unsubscribe(
     messages: list = []
     if sender:
         from mailtrim.core.validation import validate_sender_email
+
         sender = validate_sender_email(sender)
         with console.status(f"Finding emails from {sender}..."):
             ids = client.list_message_ids(query=f"from:{sender}", max_results=1)
@@ -1429,6 +1488,17 @@ def purge(
         "--ai",
         help="Adjust confidence scores with local AI signal (requires llama.cpp at localhost:8080).",
     ),
+    provider: str = typer.Option("gmail", "--provider", help="Email provider: gmail or imap."),
+    imap_server: str = typer.Option("", "--imap-server", help="IMAP server hostname."),
+    imap_user: str = typer.Option("", "--imap-user", help="IMAP login username."),
+    imap_password: str = typer.Option(
+        "", "--imap-password", help="IMAP app password.", hide_input=True
+    ),
+    ai_backend: str = typer.Option(
+        "llama", "--ai-backend", help="Local AI backend: llama or ollama."
+    ),
+    ai_url: str = typer.Option("", "--ai-url", help="Override local AI server URL."),
+    ai_model: str = typer.Option("phi3", "--ai-model", help="Model name (Ollama only)."),
 ):
     """
     Show top email offenders and bulk-delete the ones you choose.
@@ -1453,7 +1523,12 @@ def purge(
     from mailtrim.core.unsubscribe import UnsubscribeEngine
     from mailtrim.core.validation import validate_domain, validate_older_than
 
-    client = _get_client()
+    client = _get_provider(
+        provider=provider,
+        imap_server=imap_server,
+        imap_user=imap_user,
+        imap_password=imap_password,
+    )
     account_email = _get_account_email(client)
 
     # Validate user-supplied values before embedding them in Gmail queries.
@@ -1605,17 +1680,15 @@ def purge(
         # Gmail's from: query is a suffix match, so mail.domain.com is included.
         unique_domains = sorted({g.domain for g in groups})
         if len(unique_domains) > 1:
-            console.print(
-                f"[dim]  Includes subdomains: {', '.join(unique_domains)}[/dim]"
-            )
+            console.print(f"[dim]  Includes subdomains: {', '.join(unique_domains)}[/dim]")
         for g in sorted(groups, key=lambda x: x.count, reverse=True)[:10]:
             size_str = (
-                f"{g.total_size_mb} MB" if g.total_size_mb >= 0.1
+                f"{g.total_size_mb} MB"
+                if g.total_size_mb >= 0.1
                 else f"{g.total_size_bytes // 1024} KB"
             )
             console.print(
-                f"  [dim]{g.sender_email}[/dim]  "
-                f"[red]{g.count}[/red] emails · {size_str}"
+                f"  [dim]{g.sender_email}[/dim]  [red]{g.count}[/red] emails · {size_str}"
             )
         if len(groups) > 10:
             console.print(f"  [dim]… and {len(groups) - 10} more sender(s)[/dim]")
@@ -1661,27 +1734,27 @@ def purge(
     purge_ai_insights: dict[str, dict] = {}
     if use_ai:
         from mailtrim.core.llm import (
-            CATEGORY_ICON,
             analyze_batch,
             confidence_delta,
             should_analyze,
         )
 
         eligible_groups = [
-            g for g in groups
+            g
+            for g in groups
             if should_analyze(compute_confidence_score(g), g.count, g.sender_email)
         ]
         if eligible_groups:
             with console.status("[dim][AI] Analyzing senders via local model…[/dim]"):
                 texts = ["\n".join(g.sample_subjects) for g in eligible_groups]
                 keys = [g.sender_email for g in eligible_groups]
-                ai_results = analyze_batch(texts, cache_keys=keys)
-            purge_ai_insights = {
-                g.sender_email: r for g, r in zip(eligible_groups, ai_results)
-            }
+                _purge_ai_client = _get_ai_client_opt(ai_backend, ai_url, ai_model)
+                ai_results = analyze_batch(texts, cache_keys=keys, ai_client=_purge_ai_client)
+            purge_ai_insights = {g.sender_email: r for g, r in zip(eligible_groups, ai_results)}
 
         if purge_ai_insights:
             from mailtrim.core.llm import apply_impact_nudge
+
             apply_impact_nudge(groups, purge_ai_insights)
 
     console.print()
