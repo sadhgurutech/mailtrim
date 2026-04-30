@@ -6,26 +6,26 @@ from __future__ import annotations
 
 
 def test_check_result_fields():
-    from mailtrim.core.diagnostics import CheckResult
+    import mailtrim.core.diagnostics as diag
 
-    r = CheckResult(name="Test", ok=True, message="All good")
+    r = diag.CheckResult(name="Test", ok=True, message="All good")
     assert r.ok is True
     assert r.fix == ""
     assert r.optional is False
 
 
 def test_check_result_failure_with_fix():
-    from mailtrim.core.diagnostics import CheckResult
+    import mailtrim.core.diagnostics as diag
 
-    r = CheckResult(name="Auth", ok=False, message="Token missing", fix="mailtrim auth")
+    r = diag.CheckResult(name="Auth", ok=False, message="Token missing", fix="mailtrim auth")
     assert r.ok is False
     assert "mailtrim auth" in r.fix
 
 
 def test_check_result_optional():
-    from mailtrim.core.diagnostics import CheckResult
+    import mailtrim.core.diagnostics as diag
 
-    r = CheckResult(name="AI", ok=False, message="Not reachable", optional=True)
+    r = diag.CheckResult(name="AI", ok=False, message="Not reachable", optional=True)
     assert r.optional is True
 
 
@@ -96,9 +96,9 @@ def test_check_data_dir_unwritable(tmp_path, monkeypatch):
 
 
 def test_check_dependencies_all_present():
-    from mailtrim.core.diagnostics import check_dependencies
+    import mailtrim.core.diagnostics as diag
 
-    result = check_dependencies()
+    result = diag.check_dependencies()
     assert result.ok is True
     assert "All required" in result.message
 
@@ -107,9 +107,9 @@ def test_check_dependencies_all_present():
 
 
 def test_check_ai_endpoint_unreachable():
-    from mailtrim.core.diagnostics import check_ai_endpoint
+    import mailtrim.core.diagnostics as diag
 
-    result = check_ai_endpoint(url="http://127.0.0.1:19999")  # unused port
+    result = diag.check_ai_endpoint(url="http://127.0.0.1:19999")  # unused port
     assert result.ok is False
     assert result.optional is True
 
