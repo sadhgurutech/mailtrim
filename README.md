@@ -43,8 +43,9 @@ The paid tools charge $7–$40/month, process your email on their servers, and s
 
 - **All data stays in `~/.mailtrim/`** — no external servers, no telemetry, no analytics
 - **OAuth token** is written `chmod 0o600` (owner read-only)
-- **AI features** send only email subjects and snippets to Anthropic — never full body content. See [Anthropic's privacy policy](https://www.anthropic.com/privacy) for their data handling.
-- **No AI key?** — everything except `triage`, `bulk`, `avoid`, `digest`, and `rules --add` works without one
+- **Local AI (Ollama/llama.cpp)** — fully offline; nothing leaves your machine. Use `--ai-backend ollama` or `--ai-backend llama`.
+- **Cloud AI features** send only email subjects and snippets to Anthropic — never full body content. See [Anthropic's privacy policy](https://www.anthropic.com/privacy) for their data handling.
+- **No AI key?** — everything except `triage`, `bulk`, `avoid`, `digest`, and `rules --add` works without one. Local AI enrichment also needs no Anthropic key.
 - **Why `gmail.modify` scope?** This grants read, compose, trash, and label access — mailtrim uses it to list messages, move mail to Trash, and manage labels. The scope technically permits reading full body content; mailtrim fetches metadata only and never reads or stores body text.
 - **Why `gmail.send` scope?** The `follow-up` command creates reminder drafts. It is never called by `stats`, `purge`, `triage`, `bulk`, `undo`, or any cleanup command. If you don't use `follow-up`, this permission is never exercised.
 - **Revoking access:** Go to [myaccount.google.com/permissions](https://myaccount.google.com/permissions) and remove mailtrim. Delete `~/.mailtrim/token.json` locally to complete the removal.
@@ -57,9 +58,10 @@ The paid tools charge $7–$40/month, process your email on their servers, and s
 | Feature | Commands | Cost |
 |---------|----------|------|
 | Inbox analysis + bulk delete | `stats`, `purge`, `undo`, `sync`, `unsubscribe`, `follow-up`, `rules --run` | **Free — no API key needed** |
-| AI classification + NL cleanup | `triage`, `bulk`, `avoid`, `digest`, `rules --add` | Requires [Anthropic API key](https://console.anthropic.com) · ~$0.01–0.05 per run |
+| Local AI enrichment (sender confidence) | `stats --ai-backend ollama`, `purge --ai-backend llama` | **Free — runs on your machine** (requires Ollama or llama.cpp) |
+| Cloud AI classification + NL cleanup | `triage`, `bulk`, `avoid`, `digest`, `rules --add` | Requires [Anthropic API key](https://console.anthropic.com) · ~$0.01–0.05 per run |
 
-The core cleanup workflow — scan, rank, delete, undo — costs nothing and requires no AI key. AI features are optional and pay-per-use; there is no subscription.
+The core cleanup workflow — scan, rank, delete, undo — costs nothing and requires no AI key. Local AI enrichment (Ollama/llama.cpp) is also free and fully offline. Cloud AI features are optional and pay-per-use; there is no subscription.
 
 ---
 
@@ -170,7 +172,7 @@ TOTAL RECLAIMABLE SPACE
  #  Impact         Sender                Emails  Size     Oldest       Risk
  1  100 (High)     LinkedIn Jobs            312  44.0MB   847d ago     Safe to clean
  2   82 (High)     Substack Weekly          183  26.1MB   512d ago     Safe to clean
- 3   51 (Medium)   GitHub Notifications     147   9.3MB    91d ago     Low risk
+ 3   51 (Medium)   GitHub Notifications     147   9.3MB    91d ago     Needs review
  4   29 (Low)      Shopify                   94  12.2MB   203d ago     Safe to clean
  5   18 (Low)      Medium Daily Digest       87  11.4MB   445d ago     Safe to clean
 
@@ -245,7 +247,17 @@ mailtrim doctor --ai   # also checks local AI endpoint
 
 ```bash
 mailtrim stats
-mailtrim stats --json   # machine-readable output
+mailtrim stats --json                        # machine-readable output
+
+# Use with any IMAP account (Outlook, Fastmail, iCloud, self-hosted…)
+mailtrim stats --provider imap \
+  --imap-server imap.fastmail.com \
+  --imap-user you@fastmail.com
+# IMAP password is read from MAILTRIM_IMAP_PASSWORD env var or prompted securely
+
+# Enrich confidence scores with a local AI model (no Anthropic key needed)
+mailtrim stats --ai-backend ollama --ai-model phi3    # requires Ollama running
+mailtrim stats --ai-backend llama                      # requires llama.cpp at localhost:8080
 ```
 
 ### `purge` — Bulk delete by sender *(no AI needed)*
@@ -260,7 +272,7 @@ Three signals combine to estimate how safe bulk-deletion is (0–100):
 | Age ≥ 180 days in inbox | up to 35 pts | Emails sitting >6 months are rarely actionable |
 | Volume ≥ 50 from one sender | up to 35 pts | High frequency = almost certainly automated |
 
-🟢 ≥70 = Safe to clean · 🟡 40–69 = Low risk · 🔴 <40 = Review first
+🟢 ≥70 = Safe to clean · 🟡 40–69 = Needs review · 🔴 Sensitive / personal (bank, health, legal — never auto-deleted)
 
 Scores are heuristics — the 30-day undo exists precisely because no heuristic is perfect.
 
@@ -272,6 +284,12 @@ mailtrim purge --query "older_than:1y"  # custom query
 mailtrim purge --unsub                  # also unsubscribe while deleting
 mailtrim purge --permanent              # skip Trash — IRREVERSIBLE
 mailtrim purge --json                   # output sender list as JSON
+
+# IMAP account
+mailtrim purge --provider imap --imap-server imap.outlook.com --imap-user you@outlook.com
+
+# Local AI enrichment
+mailtrim purge --ai-backend ollama --ai-model phi3
 ```
 
 ### `sync` — Pull inbox into local cache
@@ -361,6 +379,7 @@ All settings via environment variables or `~/.mailtrim/.env`:
 | `MAILTRIM_AVOIDANCE_VIEW_THRESHOLD` | `3` | Views before an email is "avoided" |
 | `MAILTRIM_FOLLOW_UP_DEFAULT_DAYS` | `3` | Default follow-up window |
 | `MAILTRIM_DIR` | `~/.mailtrim` | Where tokens, DB, and config are stored |
+| `MAILTRIM_IMAP_PASSWORD` | *(not set)* | IMAP password for `--provider imap` (avoids interactive prompt) |
 
 **`~/.mailtrim/.env` example:**
 ```
@@ -399,19 +418,28 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Bug reports and feature requests welcome
 mailtrim/
 ├── config.py              # Settings (env vars, ~/.mailtrim/.env)
 ├── core/
+│   ├── providers/
+│   │   ├── base.py        # EmailProvider ABC — 8-method interface
+│   │   ├── gmail.py       # Gmail implementation (OAuth + REST API)
+│   │   ├── imap.py        # IMAP implementation (stdlib only, SSL, batch fetch)
+│   │   └── factory.py     # get_provider("gmail"|"imap", ...) — selection point
+│   ├── ai/
+│   │   └── client.py      # AIClient ABC + LlamaCppClient + OllamaClient
 │   ├── gmail_client.py    # Gmail API: OAuth, CRUD, batching, retry on 429/5xx
 │   ├── storage.py         # Local SQLite: emails, follow-ups, rules, undo log
 │   ├── ai_engine.py       # Claude API: classify, NL→query, digest, avoidance
 │   ├── mock_ai.py         # Deterministic stub — full testing without API key
+│   ├── llm.py             # Local scoring engine: confidence, recommendations
 │   ├── follow_up.py       # Conditional follow-up: only surfaces if no reply
 │   ├── bulk_engine.py     # NL → dry-run preview → execute → 30-day undo
 │   ├── avoidance.py       # "Emails you avoid" detector + per-email AI insight
 │   ├── unsubscribe.py     # RFC 8058 one-click + mailto + Playwright headless
-│   ├── sender_stats.py    # Sender aggregation for stats/purge commands
+│   ├── sender_stats.py    # Sender aggregation, risk classification, scoring
+│   ├── validation.py      # Input sanitization (query strings, user input)
 │   ├── diagnostics.py     # doctor command checks (auth, storage, connection)
 │   ├── errors.py          # Human-readable error translation layer
 │   └── usage_stats.py     # Local-only run metrics (never uploaded)
-└── cli/main.py            # Typer + Rich CLI — 13 commands
+└── cli/main.py            # Typer + Rich CLI — 15 commands
 ```
 
 ---
