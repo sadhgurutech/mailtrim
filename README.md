@@ -1,6 +1,8 @@
 # mailtrim
 
-**Delete years of Gmail clutter in minutes. Free, open-source. Core features need no API key.**
+**mailtrim helps you clean your inbox safely in seconds — everything goes to Trash first, undo anytime, nothing leaves your machine.**
+
+Free, open-source. Core features need no API key.
 
 [![PyPI](https://img.shields.io/pypi/v/mailtrim.svg)](https://pypi.org/project/mailtrim/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://python.org)
@@ -58,6 +60,56 @@ The paid tools charge $7–$40/month, process your email on their servers, and s
 | AI classification + NL cleanup | `triage`, `bulk`, `avoid`, `digest`, `rules --add` | Requires [Anthropic API key](https://console.anthropic.com) · ~$0.01–0.05 per run |
 
 The core cleanup workflow — scan, rank, delete, undo — costs nothing and requires no AI key. AI features are optional and pay-per-use; there is no subscription.
+
+---
+
+## 60-Second Quick Start
+
+Already have credentials.json from Google? This is all you need:
+
+```bash
+pip install mailtrim
+mailtrim auth        # opens browser once
+mailtrim quickstart  # guided first cleanup
+```
+
+Not set up yet? See the full setup below — it takes about 15 minutes once.
+
+---
+
+## Safe by Default
+
+- **Everything goes to Trash first** — nothing is permanently deleted unless you explicitly use `--permanent` (hidden flag, requires a second confirmation flag)
+- **30-day undo window** — run `mailtrim undo` anytime to reverse any cleanup
+- **All data stays on your machine** — `~/.mailtrim/` only, no telemetry, no cloud sync
+- **Dry-run first** — most commands show you what they'd do before asking you to confirm
+
+```bash
+mailtrim purge --domain linkedin.com   # shows what would be deleted, asks to confirm
+mailtrim undo                          # shows recent operations, pick one to reverse
+mailtrim doctor                        # checks auth, storage, and connection health
+```
+
+---
+
+## Common Fixes
+
+If something isn't working, run:
+
+```bash
+mailtrim doctor
+```
+
+This checks auth, Gmail connection, storage, and optional AI — and tells you exactly what to fix.
+
+| Symptom | Fix |
+|---------|-----|
+| "Gmail connection expired" | `mailtrim auth` |
+| "Token file not found" | `mailtrim auth` |
+| "Cannot write to ~/.mailtrim/" | `chmod 700 ~/.mailtrim` |
+| "Rate limit hit" | Wait 60 seconds, retry with `--max-scan 300` |
+| Scan feels slow | Use `--max-scan 500` (default is 1000) |
+| Not seeing enough senders | Try `mailtrim stats --scope anywhere` |
 
 ---
 
@@ -175,6 +227,19 @@ Free forever. → https://github.com/sadhgurutech/mailtrim
 ---
 
 ## All Commands
+
+### `quickstart` — Guided first cleanup *(no AI needed)*
+
+```bash
+mailtrim quickstart   # checks auth, scans inbox, shows your first safe action
+```
+
+### `doctor` — Health check
+
+```bash
+mailtrim doctor        # checks auth, Gmail, storage, config
+mailtrim doctor --ai   # also checks local AI endpoint
+```
 
 ### `stats` — Quick inbox overview *(no AI needed)*
 
@@ -311,7 +376,7 @@ MAILTRIM_UNDO_WINDOW_DAYS=30
 ## Testing (no credentials required)
 
 ```bash
-# Run all 115 tests — zero API calls, zero credentials needed
+# Run all tests — zero API calls, zero credentials needed
 python -m pytest tests/ -v
 
 # With coverage
@@ -342,8 +407,11 @@ mailtrim/
 │   ├── bulk_engine.py     # NL → dry-run preview → execute → 30-day undo
 │   ├── avoidance.py       # "Emails you avoid" detector + per-email AI insight
 │   ├── unsubscribe.py     # RFC 8058 one-click + mailto + Playwright headless
-│   └── sender_stats.py    # Sender aggregation for stats/purge commands
-└── cli/main.py            # Typer + Rich CLI — 11 commands
+│   ├── sender_stats.py    # Sender aggregation for stats/purge commands
+│   ├── diagnostics.py     # doctor command checks (auth, storage, connection)
+│   ├── errors.py          # Human-readable error translation layer
+│   └── usage_stats.py     # Local-only run metrics (never uploaded)
+└── cli/main.py            # Typer + Rich CLI — 13 commands
 ```
 
 ---

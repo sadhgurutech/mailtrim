@@ -73,7 +73,8 @@ class AIEngine:
         key = api_key or settings.anthropic_api_key
         if not key:
             raise ValueError(
-                "ANTHROPIC_API_KEY is not set. Run: export ANTHROPIC_API_KEY=sk-ant-..."
+                "ANTHROPIC_API_KEY is not set. "
+                "Set it as an environment variable before running this command."
             )
         self._client = anthropic.Anthropic(api_key=key)
         self._model = settings.ai_model

@@ -54,6 +54,9 @@ def get_settings() -> Settings:
     global _settings
     if _settings is None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
+        # Restrict the data directory so other local users cannot browse it.
+        # Credentials and tokens stored here are sensitive.
+        DATA_DIR.chmod(0o700)
         UNDO_LOG_DIR.mkdir(parents=True, exist_ok=True)
         _settings = Settings()
     return _settings
