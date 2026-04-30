@@ -38,7 +38,6 @@ logger = logging.getLogger(__name__)
 _DEFAULT_PORT = 993
 _BATCH_SIZE = 100  # UIDs per FETCH command
 _MAX_BODY_CHARS = 400  # body preview truncation
-_CONNECT_TIMEOUT = 10  # seconds
 
 # Common IMAP folder names for Trash and Archive across providers
 _TRASH_FOLDERS = ["Trash", "[Gmail]/Trash", "Deleted Messages", "Deleted Items"]
@@ -352,8 +351,8 @@ class IMAPProvider(EmailProvider):
                 logger.debug("IMAP connection stale, reconnecting")
                 try:
                     self._conn.logout()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Ignoring logout error during reconnect: %s", exc)
                 self._conn = self._connect()
                 self._selected_folder = None
         return self._conn
@@ -524,7 +523,7 @@ class IMAPProvider(EmailProvider):
                 if typ == "OK":
                     return len(ids)
             except imaplib.IMAP4.error:
-                pass
+                pass  # MOVE not supported — fall through to seen-flag fallback
 
         # Fallback: mark as seen (closest to "archive" on servers without MOVE)
         try:
@@ -601,8 +600,8 @@ class IMAPProvider(EmailProvider):
                 if self._selected_folder:
                     self._conn.close()
                 self._conn.logout()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Ignoring IMAP close/logout error during cleanup: %s", exc)
             finally:
                 self._conn = None
                 self._selected_folder = None

@@ -2489,9 +2489,7 @@ def doctor(
     for r in results:
         if r.ok:
             icon = "[green]✓[/green]"
-            if r.optional:
-                optional_warn = optional_warn  # stays 0 — it passed
-            else:
+            if not r.optional:
                 required_ok += 1
         elif r.optional:
             icon = "[yellow]⚠[/yellow]"

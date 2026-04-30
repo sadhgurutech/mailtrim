@@ -52,15 +52,6 @@ _FEW_SHOT = (
 _VALID_CATEGORIES = frozenset({"important", "promo", "update", "spam"})
 _VALID_ACTIONS = frozenset({"keep", "archive", "delete"})
 
-# GBNF grammar constrains the model to only emit valid tokens for C and A.
-# This makes the parser trivial and eliminates hallucinated labels entirely.
-_GRAMMAR = (
-    'root ::= "S:" summary "\\nC:" category "\\nA:" action\n'
-    "summary ::= [^\\n]+\n"
-    'category ::= "important" | "promo" | "update" | "spam"\n'
-    'action ::= "keep" | "archive" | "delete"'
-)
-
 # AI signal → confidence delta.  Spam overrides action; capped at ±15.
 _ACTION_DELTA: dict[str, int] = {"delete": 10, "archive": -3, "keep": -10}
 _SPAM_DELTA = 15  # applied instead of action delta when category == "spam"
