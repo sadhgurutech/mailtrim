@@ -118,7 +118,9 @@ def test_check_ai_endpoint_unreachable():
 
 
 def test_run_all_returns_list():
-    from mailtrim.core.diagnostics import run_all
+    import mailtrim.core.diagnostics as diag
+
+    run_all = diag.run_all
 
     results = run_all(include_optional=False)
     assert isinstance(results, list)
@@ -129,7 +131,9 @@ def test_run_all_returns_list():
 
 
 def test_run_all_optional_included():
-    from mailtrim.core.diagnostics import run_all
+    import mailtrim.core.diagnostics as diag
+
+    run_all = diag.run_all
 
     with_opt = run_all(include_optional=True)
     without_opt = run_all(include_optional=False)
