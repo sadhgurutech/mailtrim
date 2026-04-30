@@ -236,12 +236,16 @@ Free forever. → https://github.com/sadhgurutech/mailtrim
 mailtrim quickstart   # checks auth, scans inbox, shows your first safe action
 ```
 
+![mailtrim quickstart](mailtrim/screenshots/quickstart.png)
+
 ### `doctor` — Health check
 
 ```bash
 mailtrim doctor        # checks auth, Gmail, storage, config
 mailtrim doctor --ai   # also checks local AI endpoint
 ```
+
+![mailtrim doctor](mailtrim/screenshots/doctor.png)
 
 ### `stats` — Quick inbox overview *(no AI needed)*
 
@@ -259,6 +263,8 @@ mailtrim stats --provider imap \
 mailtrim stats --ai-backend ollama --ai-model phi3    # requires Ollama running
 mailtrim stats --ai-backend llama                      # requires llama.cpp at localhost:8080
 ```
+
+![mailtrim stats](mailtrim/screenshots/stats.png)
 
 ### `purge` — Bulk delete by sender *(no AI needed)*
 
