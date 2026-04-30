@@ -55,6 +55,90 @@ _TRANSACTIONAL_KEYWORDS: frozenset[str] = frozenset(
 _TRANSACTIONAL_PENALTY = 25  # pts deducted when transactional keywords are found
 
 
+# ── Sender risk classification ────────────────────────────────────────────────
+
+# Domain/name fragments that indicate sensitive senders (banks, healthcare,
+# schools, government, legal).  Matching any of these overrides the confidence
+# score — we never surface auto-delete actions for these senders.
+_SENSITIVE_DOMAIN_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "bank",
+        "icici",
+        "hdfc",
+        "sbi",
+        "axis",
+        "kotak",
+        "chase",
+        "citi",
+        "barclays",
+        "bankofamerica",
+        "amex",
+        "americanexpress",
+        "fidelity",
+        "vanguard",
+        "schwab",
+        "finance",
+        "financial",
+        "invest",
+        "brokerage",
+        "insurance",
+        "mortgage",
+        "loan",
+        "credit",
+        "hospital",
+        "clinic",
+        "health",
+        "medical",
+        "medicare",
+        "pharmacy",
+        "school",
+        "district",
+        "university",
+        "college",
+        "academy",
+        "gov",
+        "irs",
+        "court",
+        "legal",
+        "attorney",
+    }
+)
+
+# Domain/name fragments that confirm safe bulk/marketing senders.
+# Matching any of these + moderate confidence → "Safe to clean".
+_SAFE_SENDER_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "newsletter",
+        "noreply",
+        "no-reply",
+        "donotreply",
+        "promo",
+        "promotions",
+        "marketing",
+        "deals",
+        "offers",
+        "sale",
+        "jobs",
+        "careers",
+        "jobalert",
+        "digest",
+        "updates",
+        "notifications",
+        "linkedin",
+        "indeed",
+        "glassdoor",
+        "naukri",
+        "utest",
+        "github",
+        "gitlab",
+        "jira",
+        "atlassian",
+        "medium",
+        "substack",
+    }
+)
+
+
 # ── Age formatting ────────────────────────────────────────────────────────────
 
 
@@ -257,8 +341,8 @@ def confidence_safety_label(score: int) -> str:
     if score >= 70:
         return "Safe to clean"
     if score >= 40:
-        return "Low risk"
-    return "Review first"
+        return "Needs review"
+    return "Sensitive / personal"
 
 
 def risk_tier_icon(confidence: int) -> str:
@@ -295,6 +379,64 @@ def confidence_reason(g: SenderGroup) -> str:
     if any(kw in subjects_lower for kw in _TRANSACTIONAL_KEYWORDS):
         parts.append("transactional keywords detected")
     return " + ".join(parts) if parts else "limited signals"
+
+
+def classify_sender_risk(g: SenderGroup) -> str:
+    """
+    Classify a sender's inherent risk: "sensitive", "safe", or "review".
+
+    "sensitive" → bank/healthcare/school/legal — never auto-delete.
+                  Overrides unsubscribe signal and confidence score.
+    "safe"      → confirmed newsletter/promo/marketing — safe to bulk-clean.
+    "review"    → everything else — defer to confidence score.
+    """
+    combined = f"{g.domain} {(g.sender_name or '')} {g.sender_email}".lower()
+    if any(kw in combined for kw in _SENSITIVE_DOMAIN_KEYWORDS):
+        return "sensitive"
+    if any(kw in combined for kw in _SAFE_SENDER_KEYWORDS):
+        return "safe"
+    return "review"
+
+
+def sender_risk_tier_from_conf(g: SenderGroup, conf: int) -> tuple[str, str, str]:
+    """
+    Return (label, icon, color) using sender classification + explicit conf value.
+
+    Sensitive senders always → 🔴 regardless of confidence (prevents a bank
+    with List-Unsubscribe from being labelled "Safe to clean").
+    Confirmed safe senders with modest confidence → 🟢.
+    Everything else uses the confidence thresholds, but low-confidence non-sensitive
+    senders get 🟡 "Needs review" instead of 🔴 to avoid overfiring red labels.
+    """
+    risk_class = classify_sender_risk(g)
+    if risk_class == "sensitive":
+        return ("Sensitive / personal", "🔴", "red")
+    if risk_class == "safe" and conf >= 30:
+        return ("Safe to clean", "🟢", "green")
+    if conf >= 70:
+        return ("Safe to clean", "🟢", "green")
+    if conf >= 40:
+        return ("Needs review", "🟡", "yellow")
+    # Low-confidence, non-sensitive → uncertain, not dangerous
+    return ("Needs review", "🟡", "yellow")
+
+
+def sender_risk_tier(g: SenderGroup) -> tuple[str, str, str]:
+    """Return (label, icon, color) using rule-based confidence only."""
+    return sender_risk_tier_from_conf(g, compute_confidence_score(g))
+
+
+def confidence_description(score: int) -> str:
+    """Human-readable interpretation of a confidence score."""
+    if score >= 80:
+        return "Likely safe"
+    if score >= 60:
+        return "Probably safe"
+    if score >= 40:
+        return "Needs manual review"
+    if score >= 20:
+        return "Needs manual review"
+    return "Very risky to automate"
 
 
 # ── Time estimation ───────────────────────────────────────────────────────────
@@ -369,25 +511,30 @@ def generate_headline_insight(
     reclaim_pct: float,
     rec_count: int,
     reclaimable_mb_val: float,
+    recommendations: "list[Recommendation] | None" = None,
 ) -> str:
     """
     Generate a punchy, personalised one-liner that is the very first thing
-    the user reads. Designed to immediately convey the scale of the problem
-    and make the tool feel like it "gets" them.
+    the user reads.
 
     Decision logic (most dramatic fact wins):
     - Heavy clutter (≥ 30%): lead with the percentage
     - Large absolute size (≥ 50 MB): lead with the MB
     - Old inbox (≥ 365d oldest): lead with time
-    - High-volume, small files: acknowledge the noise
-    - Clean inbox: celebrate it
+    - Low but non-zero savings: acknowledge small wins
+    - No safe actions, only review items: correct messaging
+    - Truly clean inbox: celebrate it
+
+    The ``recommendations`` list is used to pick the right empty-state message
+    so we never say "nothing to delete" while the tool simultaneously shows
+    manual-review items in the sections below.
     """
     if insights.total_scanned == 0:
         return "📭 No emails found matching the scan query."
 
     if reclaim_pct >= 30:
         return (
-            f"💥 {reclaim_pct:.0f}% of your inbox is clutter — caused by just "
+            f"💥 {reclaim_pct:.0f}% of scanned emails appear reclaimable — caused by just "
             f"{rec_count} sender{'s' if rec_count != 1 else ''}. "
             f"{reclaimable_mb_val} MB gone in one command."
         )
@@ -407,13 +554,28 @@ def generate_headline_insight(
         )
 
     if reclaimable_mb_val > 0:
+        # Distinguish small-but-real wins from "nothing"
+        if reclaimable_mb_val < 10:
+            return (
+                f"🧹 Small cleanup wins available — "
+                f"{rec_count} sender{'s' if rec_count != 1 else ''} worth tidying."
+            )
         return (
             f"📬 Scanned {insights.unique_senders} senders — "
             f"{rec_count} sender{'s' if rec_count != 1 else ''} "
             f"responsible for {reclaimable_mb_val} MB you don't need."
         )
 
-    return "✅ Inbox looking clean — nothing worth deleting right now."
+    # No reclaimable storage — but may still have review-only items
+    recs = recommendations or []
+    has_safe = any(classify_sender_risk(r.sender) != "sensitive" for r in recs if r.actions)
+    has_any = bool(recs)
+
+    if has_safe:
+        return "🔍 You have a few easy cleanup wins available."
+    if has_any:
+        return "📋 Inbox mostly clean — a few items need manual review."
+    return "✅ Inbox looking clean — nothing worth cleaning right now."
 
 
 # ── Reading time estimate ─────────────────────────────────────────────────────
@@ -608,12 +770,23 @@ def generate_recommendations(
       mailtrim purge --domain example.com --keep 10
       mailtrim purge --domain example.com --older-than 90
     """
-    by_score = sorted(groups, key=lambda g: g.impact_score, reverse=True)
+
+    # Rank by impact weighted by confidence so low-confidence senders don't
+    # crowd out safer picks.  Weight maps [0,100] confidence to [0.1, 1.0].
+    def _rank(g: SenderGroup) -> float:
+        conf = compute_confidence_score(g)
+        weight = 0.1 + (conf / 100) * 0.9
+        return g.impact_score * weight
+
+    by_score = sorted(groups, key=_rank, reverse=True)
     recs: list[Recommendation] = []
 
-    for g in by_score[:top_n]:
+    for g in by_score:  # iterate all candidates; break once we have top_n valid recs
+        if len(recs) >= top_n:
+            break
         actions: list[Action] = []
         domain = g.domain
+        risk_class = classify_sender_risk(g)
 
         # Use domain-level totals when available so savings and thresholds
         # match what `purge --domain` will actually delete.
@@ -622,71 +795,99 @@ def generate_recommendations(
         count = d.count if d else g.count
         days = g.inbox_days  # sender-level age is the right signal here
 
-        # Action 1: always offer "delete all" if there's meaningful size
-        if size_mb >= 1:
+        if risk_class == "sensitive":
+            # Never offer auto-delete for banks, schools, healthcare, legal.
+            # --dry-run previews what would be deleted without touching anything.
             actions.append(
                 Action(
-                    label="Delete all",
-                    savings_mb=size_mb,
-                    savings_exact=True,
-                    command=f"mailtrim purge --domain {domain} --yes",
-                )
-            )
-
-        # Action 2: depends on the sender profile
-        if size_mb < 3 and count >= 30:
-            # High noise, low storage — mark as read first, then age-based delete
-            actions.append(
-                Action(
-                    label="Mark all as read",
+                    label="Review manually",
                     savings_mb=0,
                     savings_exact=True,
-                    command=f"mailtrim bulk mark-read --domain {domain}",
+                    command=f"mailtrim purge --domain {domain} --dry-run",
                 )
             )
-            actions.append(
-                Action(
-                    label="Delete older than 30d",
-                    savings_mb=round(size_mb * 0.85, 1),
-                    savings_exact=False,
-                    command=f"mailtrim purge --domain {domain} --older-than 30",
+            if count > 5:
+                keep = 5
+                fraction = max(0, (count - keep) / count)
+                actions.append(
+                    Action(
+                        label=f"Keep latest {keep}",
+                        savings_mb=round(size_mb * fraction, 1),
+                        savings_exact=False,
+                        command=f"mailtrim purge --domain {domain} --keep {keep}",
+                    )
                 )
-            )
+        else:
+            # Action 1: always offer "delete all" if there's meaningful size
+            if size_mb >= 1:
+                actions.append(
+                    Action(
+                        label="Delete all",
+                        savings_mb=size_mb,
+                        savings_exact=True,
+                        command=f"mailtrim purge --domain {domain} --yes",
+                    )
+                )
 
-        elif count >= 50 and days >= 60:
-            # High-count, long history — keep a small recent tail
-            keep = 10
-            fraction_deleted = max(0, (count - keep) / count)
-            actions.append(
-                Action(
-                    label=f"Keep last {keep}",
-                    savings_mb=round(size_mb * fraction_deleted, 1),
-                    savings_exact=False,
-                    command=f"mailtrim purge --domain {domain} --keep {keep}",
+            # Action 2: depends on the sender profile
+            if size_mb < 3 and count >= 30:
+                # High noise, low storage — mark as read first, then age-based delete
+                actions.append(
+                    Action(
+                        label="Mark all as read",
+                        savings_mb=0,
+                        savings_exact=True,
+                        command=f"mailtrim bulk mark-read --domain {domain}",
+                    )
                 )
-            )
+                if days >= 30:
+                    actions.append(
+                        Action(
+                            label="Delete older than 30d",
+                            savings_mb=round(size_mb * 0.85, 1),
+                            savings_exact=False,
+                            command=f"mailtrim purge --domain {domain} --older-than 30",
+                        )
+                    )
 
-        elif days >= 60:
-            # Old clutter — delete by age
-            actions.append(
-                Action(
-                    label="Delete older than 90d",
-                    savings_mb=round(size_mb * 0.85, 1),
-                    savings_exact=False,
-                    command=f"mailtrim purge --domain {domain} --older-than 90",
+            elif count >= 50 and days >= 60:
+                # High-count, long history — keep a small recent tail
+                keep = 10
+                fraction_deleted = max(0, (count - keep) / count)
+                actions.append(
+                    Action(
+                        label=f"Keep last {keep}",
+                        savings_mb=round(size_mb * fraction_deleted, 1),
+                        savings_exact=False,
+                        command=f"mailtrim purge --domain {domain} --keep {keep}",
+                    )
                 )
-            )
 
-        if size_mb < 1:
-            # Too small for size-based actions; still useful as a noise cleanup
-            actions.append(
-                Action(
-                    label="Delete older than 30d",
-                    savings_mb=round(size_mb * 0.8, 1),
-                    savings_exact=False,
-                    command=f"mailtrim purge --domain {domain} --older-than 30",
+            elif days >= 90:
+                # Old clutter — only suggest the 90d age action when emails that old exist
+                actions.append(
+                    Action(
+                        label="Delete older than 90d",
+                        savings_mb=round(size_mb * 0.85, 1),
+                        savings_exact=False,
+                        command=f"mailtrim purge --domain {domain} --older-than 90",
+                    )
                 )
-            )
+
+            if size_mb < 1 and days >= 30:
+                # Too small for size-based actions; only useful as noise cleanup
+                actions.append(
+                    Action(
+                        label="Delete older than 30d",
+                        savings_mb=round(size_mb * 0.8, 1),
+                        savings_exact=False,
+                        command=f"mailtrim purge --domain {domain} --older-than 30",
+                    )
+                )
+
+        # Skip senders with no actionable steps — nothing useful to show
+        if not actions:
+            continue
 
         recs.append(
             Recommendation(
@@ -696,6 +897,13 @@ def generate_recommendations(
             )
         )
 
+    # Sort: safe/review-class senders first, sensitive last.
+    # Within each tier, preserve the confidence-weighted impact ranking.
+    def _rec_tier(r: Recommendation) -> int:
+        rc = classify_sender_risk(r.sender)
+        return 0 if rc == "safe" else 1 if rc == "review" else 2
+
+    recs.sort(key=_rec_tier)
     return recs
 
 
@@ -711,17 +919,63 @@ def reclaimable_mb(recs: list[Recommendation]) -> float:
     return round(sum(rec.actions[0].savings_mb for rec in recs if rec.actions), 1)
 
 
+def best_next_step(recs: list[Recommendation]) -> Recommendation | None:
+    """
+    Easiest, safest first move for a first-time user.
+
+    Strict priority tiers — a lower tier is only used when the higher tier
+    is completely empty:
+
+      Tier 1 — Safe to clean (green): rank by confidence, then impact, then count.
+      Tier 2 — Needs review (yellow): rank by confidence, then impact.
+      Tier 3 — Sensitive (red): last resort, rank by confidence only.
+
+    This guarantees BEST NEXT STEP always points at the most trustworthy item,
+    never at a bank or school when a newsletter exists.
+    """
+    valid = [r for r in recs if r.actions]
+    if not valid:
+        return None
+
+    def _by_conf_impact_count(r: Recommendation) -> tuple:
+        return (r.confidence, r.sender.impact_score, r.sender.count)
+
+    def _by_conf_impact(r: Recommendation) -> tuple:
+        return (r.confidence, r.sender.impact_score)
+
+    safe_pool = [r for r in valid if classify_sender_risk(r.sender) == "safe"]
+    if safe_pool:
+        return max(safe_pool, key=_by_conf_impact_count)
+
+    review_pool = [r for r in valid if classify_sender_risk(r.sender) == "review"]
+    if review_pool:
+        return max(review_pool, key=_by_conf_impact)
+
+    return max(valid, key=lambda r: r.confidence)
+
+
 def quick_win(recs: list[Recommendation]) -> Recommendation | None:
     """
-    The single recommendation most worth doing first.
+    Best combination of size, confidence, and safety.
 
-    Composite score: 60% confidence + 40% impact.
-    Confidence is weighted higher so the "quick win" feels safe to act on
-    immediately, not just impactful.
+    Composite score = savings_mb * 0.5 + confidence * 0.3 + safety_bonus * 0.2
+    where safety_bonus is 100 for non-sensitive, 0 for sensitive senders.
+
+    Sensitive senders are only chosen when no non-sensitive alternative exists.
+    Requires confidence >= 40 so the result is not a dangerous pick.
     """
-    if not recs:
+    valid = [r for r in recs if r.actions and r.confidence >= 40]
+    if not valid:
         return None
-    return max(recs, key=lambda r: r.confidence * 0.6 + r.sender.impact_score * 0.4)
+
+    def _score(r: Recommendation) -> float:
+        savings = r.actions[0].savings_mb if r.actions else 0
+        rc = classify_sender_risk(r.sender)
+        # safe=100, review=50, sensitive=0 — biases toward visible safe wins
+        safety_bonus = 100 if rc == "safe" else 50 if rc == "review" else 0
+        return savings * 0.4 + r.confidence * 0.3 + safety_bonus * 0.3
+
+    return max(valid, key=_score)
 
 
 # ── Fetch + pipeline ─────────────────────────────────────────────────────────

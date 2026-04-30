@@ -277,20 +277,39 @@ def apply_impact_nudge(groups: list, ai_insights: dict[str, dict]) -> None:
 # ── Eligibility filter ────────────────────────────────────────────────────────
 
 
-def should_analyze(rule_confidence: int, email_count: int, sender_email: str) -> bool:
+_SENSITIVE_KEYWORDS: frozenset[str] = frozenset(
+    {"bank", "finance", "financial", "card", "statement", "credit", "loan", "invest"}
+)
+
+
+def should_analyze(
+    rule_confidence: int,
+    email_count: int,
+    sender_email: str,
+    *,
+    is_top_sender: bool = False,
+) -> bool:
     """
     Return True only for senders where AI adds value.
 
+    Always analyze:
+    - Top recommended senders (is_top_sender=True) — AI validates the recommendation.
+    - Senders with bank/finance keywords — high cost of mistaken deletion.
+
     Skip AI when:
-    - Rule confidence is already high (≥70) — AI can't meaningfully improve a clear case.
-    - Very high email count (>50) — frequency alone is decisive; AI is redundant.
+    - Rule confidence is already very high (≥80) and sender is not sensitive.
+    - Very high email count (>50) with moderate-high confidence — frequency is decisive.
 
     Run AI when:
     - Low confidence (<60) — AI may resolve ambiguity.
     - Small send volume (<20) — fewer signals for rules, AI adds more.
-    - Sender looks personal (no @domain.tld pattern) — harder to score by rules.
     """
-    if rule_confidence >= 70:
+    if is_top_sender:
+        return True
+    email_lower = sender_email.lower()
+    if any(kw in email_lower for kw in _SENSITIVE_KEYWORDS):
+        return True
+    if rule_confidence >= 80:
         return False
     if email_count > 50 and rule_confidence >= 60:
         return False
@@ -325,6 +344,12 @@ def _parse_response(text: str) -> dict:
             action = line[2:].strip()
 
     if not summary or category not in _VALID_CATEGORIES or action not in _VALID_ACTIONS:
+        logger.debug(
+            "parse failed: summary=%r category=%r action=%r",
+            summary,
+            category,
+            action,
+        )
         return {}
 
     return {"summary": summary, "category": category, "action": action}
