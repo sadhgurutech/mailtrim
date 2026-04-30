@@ -42,6 +42,7 @@ def _get_provider(
     imap_user: str = "",
     imap_password: str = "",
     imap_port: int = 993,
+    imap_folder: str = "INBOX",
 ):
     """Construct the EmailProvider selected by --provider."""
     from mailtrim.core.providers.factory import get_provider
@@ -52,6 +53,7 @@ def _get_provider(
         imap_user=imap_user,
         imap_password=imap_password,
         imap_port=imap_port,
+        imap_folder=imap_folder,
     )
 
 
@@ -82,6 +84,26 @@ def _get_account_email(client) -> str:
     return client.get_email_address()
 
 
+def _action_explanation(label: str, domain: str) -> str:
+    """Return a one-line plain-English explanation of what an action command does."""
+    lbl = label.lower()
+    if "review manually" in lbl:
+        return f"Previews what would be moved from {domain} — nothing is changed"
+    if "older than 90" in lbl:
+        return f"Moves emails older than 90 days from {domain} to Trash (recoverable)"
+    if "older than 30" in lbl:
+        return f"Moves emails older than 30 days from {domain} to Trash (recoverable)"
+    if "keep last" in lbl or "keep latest" in lbl:
+        parts = label.split()
+        n = parts[-1] if parts else "5"
+        return f"Moves all but the {n} most recent emails from {domain} to Trash (recoverable)"
+    if "mark" in lbl and "read" in lbl:
+        return f"Marks all emails from {domain} as read"
+    if "delete all" in lbl:
+        return f"Moves all emails from {domain} to Trash (recoverable)"
+    return ""
+
+
 def _is_first_stats_run() -> bool:
     """Returns True (and marks seen) the very first time stats completes successfully."""
     sentinel = DATA_DIR / ".stats_seen"
@@ -92,6 +114,31 @@ def _is_first_stats_run() -> bool:
     except OSError:
         pass
     return True
+
+
+def _handle_error(exc: Exception, verbose: bool = False) -> None:
+    """Translate an exception to a friendly message and exit."""
+    from mailtrim.core.errors import friendly_error
+
+    human_msg, fix_hint = friendly_error(exc)
+    console.print(f"\n[red]Error:[/red] {human_msg}")
+    if fix_hint:
+        console.print(f"  [cyan]{fix_hint}[/cyan]")
+    if verbose:
+        console.print(f"\n[dim]Details: {exc}[/dim]")
+    else:
+        console.print("[dim]  Add --verbose for technical details.[/dim]")
+    raise typer.Exit(1)
+
+
+def _record(command: str) -> None:
+    """Record command run in local usage stats (best-effort, never raises)."""
+    try:
+        from mailtrim.core.usage_stats import record_run
+
+        record_run(command)
+    except Exception:
+        pass
 
 
 # ── auth ─────────────────────────────────────────────────────────────────────
@@ -158,14 +205,20 @@ def stats(
         help="Mail scope to scan: 'inbox' (default) or 'anywhere' (includes archived, sent, all mail).",
     ),
     max_scan: int = typer.Option(
-        2000,
+        1000,
         "--max-scan",
-        help="Max emails to scan (default 2000). Raise to 5000+ for large mailboxes.",
+        help="Max emails to scan (default 1000). Raise to 5000+ for large mailboxes.",
     ),
     use_ai: bool = typer.Option(
         False,
         "--ai",
-        help="Enrich sender insights with local AI (requires llama.cpp at localhost:8080).",
+        help="[EXPERIMENTAL] Enrich sender insights with local AI (requires llama.cpp at localhost:8080).",
+    ),
+    ai_debug: bool = typer.Option(
+        False,
+        "--ai-debug",
+        help="Print AI call details, raw responses, and parse results.",
+        hidden=True,
     ),
     provider: str = typer.Option(
         "gmail",
@@ -174,8 +227,9 @@ def stats(
     ),
     imap_server: str = typer.Option("", "--imap-server", help="IMAP server hostname."),
     imap_user: str = typer.Option("", "--imap-user", help="IMAP login username."),
-    imap_password: str = typer.Option(
-        "", "--imap-password", help="IMAP app password.", hide_input=True
+    imap_port: int = typer.Option(993, "--imap-port", help="IMAP SSL port (default 993)."),
+    imap_folder: str = typer.Option(
+        "INBOX", "--imap-folder", help="IMAP folder to scan (default INBOX)."
     ),
     ai_backend: str = typer.Option(
         "llama",
@@ -184,12 +238,18 @@ def stats(
     ),
     ai_url: str = typer.Option("", "--ai-url", help="Override local AI server URL."),
     ai_model: str = typer.Option("phi3", "--ai-model", help="Model name (Ollama only)."),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v", help="Show full account summary and detailed insights."
+    ),
+    simple: bool = typer.Option(
+        False, "--simple", help="Plain-language output — no scores or tables."
+    ),
 ):
     """
     Inbox decision engine — reclaimable space, confidence-scored recommendations, top senders.
 
-    Tells you exactly what to delete, why it's safe, and how long it will take.
-    No AI required.
+    Tells you exactly what to move to Trash, why it's safe, and how long it will take.
+    No AI required. All deletions go to Trash — recoverable for 30 days.
 
     Examples:
       mailtrim stats
@@ -198,11 +258,14 @@ def stats(
       mailtrim stats --max-scan 5000    # scan more of a large mailbox
       mailtrim stats --share   # get a copyable one-liner to share
     """
+    _record("stats")
     import json as json_lib
     import time as _time
 
     from mailtrim.core.sender_stats import (
-        compute_confidence_score,
+        best_next_step,
+        classify_sender_risk,
+        confidence_description,
         confidence_reason,
         confidence_safety_label,
         fetch_sender_groups,
@@ -216,7 +279,8 @@ def stats(
         quick_win,
         reclaimable_mb,
         reclaimable_pct,
-        risk_tier_icon,
+        sender_risk_tier,
+        sender_risk_tier_from_conf,
     )
 
     if scope == "anywhere":
@@ -227,16 +291,32 @@ def stats(
         scope_label = "inbox"
 
     scan_start = _time.time()
-    client = _get_provider(
-        provider=provider,
-        imap_server=imap_server,
-        imap_user=imap_user,
-        imap_password=imap_password,
-    )
+
+    # Resolve IMAP password: env var → interactive prompt (never CLI flag)
+    import os as _os
+
+    imap_password = _os.environ.get("MAILTRIM_IMAP_PASSWORD", "")
+    if provider == "imap" and imap_user and not imap_password:
+        imap_password = typer.prompt(f"IMAP password for {imap_user}", hide_input=True, default="")
+
+    try:
+        client = _get_provider(
+            provider=provider,
+            imap_server=imap_server,
+            imap_user=imap_user,
+            imap_password=imap_password,
+            imap_port=imap_port,
+            imap_folder=imap_folder,
+        )
+    except Exception as exc:
+        _handle_error(exc, verbose=verbose)
 
     with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as p:
         t = p.add_task(f"Scanning {scope_label}…", total=None)
-        profile = client.get_profile()
+        try:
+            profile = client.get_profile()
+        except Exception as exc:
+            _handle_error(exc, verbose=verbose)
         p.update(t, description="Fetching top senders…")
         groups = fetch_sender_groups(
             client,
@@ -250,7 +330,8 @@ def stats(
         domain_groups = group_by_domain(groups)
         domain_map_lookup = {d.domain: d for d in domain_groups}
         insights = generate_insights(groups, domain_groups)
-        recommendations = generate_recommendations(groups, top_n=3, domain_map=domain_map_lookup)
+        recommendations = generate_recommendations(groups, top_n=5, domain_map=domain_map_lookup)
+        bns = best_next_step(recommendations)
         win = quick_win(recommendations)
         total_reclaimable = reclaimable_mb(recommendations)
         reclaim_pct = reclaimable_pct(total_reclaimable, insights.total_size_mb)
@@ -367,18 +448,27 @@ def stats(
         reclaim_pct=reclaim_pct,
         rec_count=len(recommendations),
         reclaimable_mb_val=total_reclaimable,
+        recommendations=recommendations,
     )
     console.print(f"  {headline}")
     console.print()
 
     # ── Reclaimable Space Banner ──────────────────────────────────────────────
     if total_reclaimable > 0:
-        pct_str = f" ({reclaim_pct}% of scanned inbox)" if reclaim_pct > 0 else ""
         total_rec_emails = sum(rec.sender.count for rec in recommendations)
         time_est = format_time_estimate(total_rec_emails)
+        if total_reclaimable < 10:
+            banner_lead = (
+                f"[bold green]Clean {total_rec_emails:,} unnecessary emails quickly[/bold green]"
+            )
+        else:
+            pct_str = f" ({reclaim_pct}% of scanned inbox)" if reclaim_pct > 0 else ""
+            banner_lead = (
+                f"[bold green]You can safely free ~{total_reclaimable} MB{pct_str}[/bold green]"
+            )
         console.print(
             Panel(
-                f"[bold green]You can safely free ~{total_reclaimable} MB{pct_str}[/bold green]\n"
+                f"{banner_lead}\n"
                 f"[dim]from your top {len(recommendations)} sender(s)  ·  "
                 f"Each cleanup takes {time_est}  ·  All deletions go to Trash — undo anytime[/dim]",
                 title="[bold]TOTAL RECLAIMABLE SPACE",
@@ -388,84 +478,139 @@ def stats(
         )
         console.print()
 
-    # ── Section 1: Account Summary ────────────────────────────────────────────
-    console.rule("[bold cyan]=== ACCOUNT SUMMARY ===", align="left")
-    console.print(
-        f"  [bold]{account_email}[/bold]\n"
-        f"  [dim]Total messages:[/dim]  {total_messages:,}   "
-        f"[dim]Total threads:[/dim] {total_threads:,}\n"
-        f"  [dim]{scope_label.capitalize()} scanned:[/dim]  {insights.total_scanned:,} messages  ·  "
-        f"[bold]{insights.total_size_mb} MB[/bold]\n"
-        f"  [dim]Unique senders:[/dim]  {insights.unique_senders}   "
-        f"[dim]Unique domains:[/dim] {insights.unique_domains}   "
-        f"[dim]Oldest email:[/dim] {insights.oldest_email_days}d ago"
-    )
-    if insights.total_scanned >= max_scan:
+    # ── Best Next Step ────────────────────────────────────────────────────────
+    if bns and bns.actions:
+        _bns_name = bns.sender.display_name[:40]
+        _bns_domain_grp = domain_map_lookup.get(bns.sender.domain)
+        _bns_count = _bns_domain_grp.count if _bns_domain_grp else bns.sender.count
+        _bns_action = bns.actions[0]
+        _bns_risk_label, _bns_icon, _bns_color = sender_risk_tier(bns.sender)
+        _bns_conf_desc = confidence_description(min(95, bns.confidence))
+        _bns_expl = _action_explanation(_bns_action.label, bns.sender.domain)
+        # Emphasise count over MB when savings are small (< 5 MB feels underwhelming)
+        if _bns_action.savings_mb >= 5:
+            _bns_value = f"[green]~{_bns_action.savings_mb} MB freed[/green]"
+        elif _bns_count > 0:
+            _bns_value = f"[green]Clean {_bns_count:,} low-value emails quickly[/green]"
+        else:
+            _bns_value = ""
         console.print(
-            f"\n  [yellow]⚠ Scan capped at {max_scan:,} — your mailbox may have more. "
-            f"Run [bold]mailtrim stats --max-scan 5000[/bold] to analyze further.[/yellow]"
+            Panel(
+                f"[bold]{_bns_name}[/bold]  [dim]{_bns_count} emails[/dim]\n"
+                + (f"  {_bns_value}\n" if _bns_value else "")
+                + f"  [cyan]{_bns_action.command}[/cyan]\n"
+                + (f"  [dim]{_bns_expl}[/dim]\n" if _bns_expl else "")
+                + f"  {_bns_icon} [{_bns_color}]{_bns_risk_label}[/{_bns_color}]  "
+                f"[dim]{_bns_conf_desc} ({min(95, bns.confidence)}%)[/dim]",
+                title="[bold green]=== BEST NEXT STEP ===",
+                border_style="green",
+                padding=(0, 2),
+            )
         )
-    if scope == "inbox" and total_messages > insights.total_scanned * 3:
+        console.print()
+    elif recommendations:
+        _top_rec = max(recommendations, key=lambda r: r.sender.impact_score)
         console.print(
-            f"\n  [dim]💡 {total_messages:,} total messages in your account vs "
-            f"{insights.total_scanned:,} scanned. Run [bold]mailtrim stats --scope anywhere[/bold] "
-            f"to include archived and sent mail.[/dim]"
+            Panel(
+                f"⚠ [bold]{_top_rec.sender.display_name[:45]}[/bold]  "
+                f"[dim]{_top_rec.sender.count} emails[/dim]\n"
+                "  Largest reclaimable item [yellow]needs review[/yellow] before deleting.",
+                title="[bold yellow]=== BEST NEXT STEP ===",
+                border_style="yellow",
+                padding=(0, 2),
+            )
         )
-    console.print()
+        console.print()
 
-    # ── Section 2: Key Insights ───────────────────────────────────────────────
-    console.rule("[bold cyan]=== KEY INSIGHTS ===", align="left")
-
-    if insights.top_storage:
-        g = insights.top_storage
+    # ── Section 1: Account Summary (verbose only) ─────────────────────────────
+    if verbose:
+        console.rule("[bold cyan]=== ACCOUNT SUMMARY ===", align="left")
         console.print(
-            f"  [bold red]🔥 Top storage hog:[/bold red]  {g.display_name[:40]}  "
-            f"[bold]{g.total_size_mb} MB[/bold] across {g.count} emails"
+            f"  [bold]{account_email}[/bold]\n"
+            f"  [dim]Total messages:[/dim]  {total_messages:,}   "
+            f"[dim]Total threads:[/dim] {total_threads:,}\n"
+            f"  [dim]{scope_label.capitalize()} scanned:[/dim]  {insights.total_scanned:,} messages  ·  "
+            f"[bold]{insights.total_size_mb} MB[/bold]\n"
+            f"  [dim]Unique senders:[/dim]  {insights.unique_senders}   "
+            f"[dim]Unique domains:[/dim] {insights.unique_domains}   "
+            f"[dim]Oldest email:[/dim] {insights.oldest_email_days}d ago"
         )
-
-    if insights.top_volume:
-        g = insights.top_volume
+    if max_scan > 1000:
         console.print(
-            f"  [bold yellow]📮 Most frequent:[/bold yellow]  {g.display_name[:40]}  "
-            f"[bold]{g.count} emails[/bold]  ·  {g.total_size_mb} MB"
+            f"\n  [dim]⚠ max-scan set to {max_scan:,} — large scans may take longer.[/dim]"
         )
+    if verbose:
+        if insights.total_scanned >= max_scan:
+            console.print(
+                f"\n  [yellow]⚠ Scan capped at {max_scan:,} — your mailbox may have more. "
+                f"Run [bold]mailtrim stats --max-scan 5000[/bold] to analyze further.[/yellow]"
+            )
+        if total_messages > 10_000:
+            console.print(
+                "\n  [dim]📬 Large mailbox detected — scanning recent inbox for quick wins[/dim]"
+            )
+        if scope == "inbox" and total_messages > insights.total_scanned * 3:
+            console.print(
+                f"\n  [dim]💡 {total_messages:,} total messages in your account vs "
+                f"{insights.total_scanned:,} scanned. Run [bold]mailtrim stats --scope anywhere[/bold] "
+                f"to include archived and sent mail.[/dim]"
+            )
+        console.print()
 
-    if insights.oldest:
-        g = insights.oldest
+    # ── Section 2: Key Insights (verbose only) ───────────────────────────────
+    if verbose:
+        console.rule("[bold cyan]=== KEY INSIGHTS ===", align="left")
+
+        if insights.top_storage:
+            g = insights.top_storage
+            console.print(
+                f"  [bold red]🔥 Top storage hog:[/bold red]  {g.display_name[:40]}  "
+                f"[bold]{g.total_size_mb} MB[/bold] across {g.count} emails"
+            )
+
+        if insights.top_volume:
+            g = insights.top_volume
+            console.print(
+                f"  [bold yellow]📮 Most frequent:[/bold yellow]  {g.display_name[:40]}  "
+                f"[bold]{g.count} emails[/bold]  ·  {g.total_size_mb} MB"
+            )
+
+        if insights.oldest:
+            g = insights.oldest
+            console.print(
+                f"  [bold blue]📅 Oldest clutter:[/bold blue]  {g.display_name[:40]}  "
+                f"sitting in inbox since [bold]{g.age_str}[/bold]"
+            )
+
+        if insights.multi_sender_domains:
+            top_multi = insights.multi_sender_domains[:3]
+            domain_parts = ", ".join(
+                f"[bold]{d.domain}[/bold] ({len(d.senders)} senders, {d.count} emails)"
+                for d in top_multi
+            )
+            console.print(f"  [bold green]🌐 Domain patterns:[/bold green]  {domain_parts}")
+
+        pct = insights.top_n_coverage_pct
+        top5_mb = insights.top_n_size_mb
         console.print(
-            f"  [bold blue]📅 Oldest clutter:[/bold blue]  {g.display_name[:40]}  "
-            f"sitting in inbox since [bold]{g.age_str}[/bold]"
+            f"\n  [dim]Top 5 senders account for[/dim] [bold]{pct}%[/bold] "
+            f"[dim]of scanned mail[/dim] ([bold]{top5_mb} MB[/bold])"
         )
+        console.print()
 
-    if insights.multi_sender_domains:
-        top_multi = insights.multi_sender_domains[:3]
-        domain_parts = ", ".join(
-            f"[bold]{d.domain}[/bold] ({len(d.senders)} senders, {d.count} emails)"
-            for d in top_multi
-        )
-        console.print(f"  [bold green]🌐 Domain patterns:[/bold green]  {domain_parts}")
-
-    pct = insights.top_n_coverage_pct
-    top5_mb = insights.top_n_size_mb
-    console.print(
-        f"\n  [dim]Top 5 senders account for[/dim] [bold]{pct}%[/bold] "
-        f"[dim]of scanned mail[/dim] ([bold]{top5_mb} MB[/bold])"
-    )
-    console.print()
-
-    # ── Quick Win ─────────────────────────────────────────────────────────────
+    # ── Quick Win — only show when it differs from BEST NEXT STEP ───────────
+    if win and win is bns:
+        win = None  # suppress duplicate — same sender already shown above
     if win and win.actions:
         first_action = win.actions[0]
-        safety = confidence_safety_label(win.confidence)
-        icon = risk_tier_icon(win.confidence)
+        _win_conf = min(95, win.confidence)
+        _win_label, _win_icon, _win_color = sender_risk_tier(win.sender)
         reason = confidence_reason(win.sender)
         _win_domain = domain_map_lookup.get(win.sender.domain)
         _win_count = _win_domain.count if _win_domain else win.sender.count
         _win_size_mb = _win_domain.total_size_mb if _win_domain else win.sender.total_size_mb
         time_est = format_time_estimate(_win_count)
-        safety_color = (
-            "green" if win.confidence >= 70 else "yellow" if win.confidence >= 40 else "red"
-        )
+        _win_conf_desc = confidence_description(_win_conf)
         savings_line = (
             f"  [yellow]→ {first_action.label}[/yellow]  "
             + (
@@ -481,9 +626,23 @@ def stats(
                 f"[dim]{_win_count} emails · {_win_size_mb} MB[/dim]\n\n"
                 + savings_line
                 + f"\n  [cyan]{first_action.command}[/cyan]\n\n"
-                f"  {icon} Confidence: [bold]{win.confidence}%[/bold]  ·  "
-                f"[{safety_color}]{safety}[/{safety_color}]"
+                f"  {_win_icon} [{_win_color}]{_win_label}[/{_win_color}]  "
+                f"[dim]{_win_conf_desc} ({_win_conf}%)[/dim]"
                 + (f"\n  [dim]Why: {reason}[/dim]" if reason != "limited signals" else ""),
+                title="[bold yellow]⚡ QUICK WIN — largest savings",
+                border_style="yellow",
+                padding=(0, 2),
+            )
+        )
+        console.print()
+    elif recommendations:
+        # All recommendations need review — surface the largest as a warning
+        _needs_review = max(recommendations, key=lambda r: r.sender.impact_score)
+        console.print(
+            Panel(
+                f"⚠ [bold]{_needs_review.sender.display_name[:45]}[/bold]  "
+                f"[dim]{_needs_review.sender.count} emails[/dim]\n"
+                "  Largest reclaimable item [yellow]needs review[/yellow] before deleting.",
                 title="[bold yellow]⚡ QUICK WIN",
                 border_style="yellow",
                 padding=(0, 2),
@@ -491,74 +650,137 @@ def stats(
         )
         console.print()
 
-    # ── Section 3: Top Senders ────────────────────────────────────────────────
-    console.rule("[bold cyan]=== TOP SENDERS ===", align="left")
+    # ── Section 3: Top Senders (verbose only) ────────────────────────────────
+    if verbose:
+        console.rule("[bold cyan]=== TOP SENDERS ===", align="left")
 
-    if groups:
-        table = Table(border_style="dim", show_header=True, header_style="bold", pad_edge=False)
-        table.add_column("#", width=3, style="dim")
-        table.add_column("Impact", width=12)
-        table.add_column("Sender", min_width=28)
-        table.add_column("Emails", justify="right", style="red bold", width=7)
-        table.add_column("Size", justify="right", width=9)
-        table.add_column("Oldest", width=12)
-        table.add_column("Risk", width=15)
-        table.add_column("Unsub", width=5, justify="center")
+        if groups:
+            table = Table(border_style="dim", show_header=True, header_style="bold", pad_edge=False)
+            table.add_column("#", width=3, style="dim")
+            table.add_column("Impact", width=12)
+            table.add_column("Sender", min_width=28)
+            table.add_column("Emails", justify="right", style="red bold", width=7)
+            table.add_column("Size", justify="right", width=9)
+            table.add_column("Oldest", width=12)
+            table.add_column("Risk", width=22)
+            table.add_column("Unsub", width=5, justify="center")
 
-        for i, g in enumerate(groups, 1):
-            ilabel = impact_label(g.impact_score)
-            label_color = {"High": "red", "Medium": "yellow", "Low": "dim"}.get(ilabel, "dim")
-            score_cell = f"[{label_color}]{g.impact_score} ({ilabel})[/{label_color}]"
-            name = g.display_name[:32]
-            size_str = (
-                f"{g.total_size_mb}MB"
-                if g.total_size_mb >= 0.1
-                else f"{g.total_size_bytes // 1024}KB"
+            for i, g in enumerate(groups, 1):
+                ilabel = impact_label(g.impact_score)
+                label_color = {"High": "red", "Medium": "yellow", "Low": "dim"}.get(ilabel, "dim")
+                score_cell = f"[{label_color}]{g.impact_score} ({ilabel})[/{label_color}]"
+                name = g.display_name[:32]
+                size_str = (
+                    f"{g.total_size_mb}MB"
+                    if g.total_size_mb >= 0.1
+                    else f"{g.total_size_bytes // 1024}KB"
+                )
+                _t_label, _t_icon, _t_color = sender_risk_tier(g)
+                risk_cell = f"{_t_icon} [{_t_color}]{_t_label}[/{_t_color}]"
+                unsub = "[green]✓[/green]" if g.has_unsubscribe else "[dim]–[/dim]"
+                table.add_row(
+                    str(i), score_cell, name, str(g.count), size_str, g.age_str, risk_cell, unsub
+                )
+
+            console.print(table)
+            console.print(
+                "[dim]  Impact = 60% storage + 40% volume (0–100)  ·  "
+                "Risk: 🟢 Safe to clean  🟡 Needs review  🔴 Sensitive / personal  ·  Unsub = List-Unsubscribe header[/dim]"
             )
-            conf = compute_confidence_score(g)
-            risk_icon = risk_tier_icon(conf)
-            safety = confidence_safety_label(conf)
-            risk_color = "green" if conf >= 70 else "yellow" if conf >= 40 else "red"
-            risk_cell = f"{risk_icon} [{risk_color}]{safety}[/{risk_color}]"
-            unsub = "[green]✓[/green]" if g.has_unsubscribe else "[dim]–[/dim]"
-            table.add_row(
-                str(i), score_cell, name, str(g.count), size_str, g.age_str, risk_cell, unsub
-            )
+        else:
+            console.print("  [dim]No senders found matching the query.[/dim]")
+        console.print()
 
-        console.print(table)
+    # ── Simple mode — plain-language output, no scores ────────────────────────
+    if simple:
+        if not recommendations:
+            console.print("  Your inbox looks clean — nothing obvious to remove right now.\n")
+        else:
+            console.print("  [bold]Here are 3 safe things you can do right now:[/bold]\n")
+            for i, rec in enumerate(recommendations[:3], 1):
+                g = rec.sender
+                _rec_domain = domain_map_lookup.get(g.domain)
+                _rec_count = _rec_domain.count if _rec_domain else g.count
+                risk_class = classify_sender_risk(g)
+                safety_note = (
+                    "safe to clean"
+                    if risk_class == "safe"
+                    else "worth a quick look first"
+                    if risk_class == "review"
+                    else "review manually — may be important"
+                )
+                if rec.actions:
+                    action = rec.actions[0]
+                    console.print(
+                        f"  [bold]{i}. {g.display_name[:45]}[/bold]  "
+                        f"[dim]({_rec_count} emails)[/dim]\n"
+                        f"     {safety_note}\n"
+                        f"     [cyan]{action.command}[/cyan]\n"
+                    )
+            console.print(
+                "[dim]  All emails moved to Trash — undo anytime with: mailtrim undo[/dim]\n"
+            )
         console.print(
-            "[dim]  Impact = 60% storage + 40% volume (0–100)  ·  "
-            "Risk: 🟢 Safe  🟡 Low risk  🔴 Review first  ·  Unsub = List-Unsubscribe header[/dim]"
+            "[dim]  Add --verbose for full details · mailtrim purge — interactive cleanup[/dim]\n"
         )
-    else:
-        console.print("  [dim]No senders found matching the query.[/dim]")
-    console.print()
+        return
 
     # ── Section 4: Recommended Actions ───────────────────────────────────────
     console.rule("[bold cyan]=== RECOMMENDED ACTIONS ===", align="left")
 
-    # Optional local-AI enrichment — only for senders where AI adds signal.
+    # Optional local-AI enrichment — always runs on all top recommendations.
     ai_insights: dict[str, dict] = {}
     if use_ai and recommendations:
         from mailtrim.core.llm import (
             analyze_batch,
             confidence_delta,
-            should_analyze,
         )
 
-        eligible = [
-            rec
-            for rec in recommendations
-            if should_analyze(rec.confidence, rec.sender.count, rec.sender.sender_email)
-        ]
-        if eligible:
-            with console.status("[dim][AI] Analyzing senders via local model…[/dim]"):
-                texts = ["\n".join(rec.sender.sample_subjects) for rec in eligible]
-                keys = [rec.sender.sender_email for rec in eligible]
-                _ai_client_override = _get_ai_client_opt(ai_backend, ai_url, ai_model)
-                results = analyze_batch(texts, cache_keys=keys, ai_client=_ai_client_override)
-            for rec, result in zip(eligible, results):
-                ai_insights[rec.sender.sender_email] = result
+        # Always run AI on all top recommendations — they are exactly the senders where
+        # a second opinion matters most. The old should_analyze filter was blocking all of
+        # them because high-confidence senders were being skipped.
+        eligible = recommendations
+
+        if ai_debug:
+            import logging as _logging
+
+            _ai_handler = _logging.StreamHandler()
+            _ai_handler.setFormatter(_logging.Formatter("[AI DEBUG] %(name)s — %(message)s"))
+            for _mod in ("mailtrim.core.ai.client", "mailtrim.core.llm"):
+                _log = _logging.getLogger(_mod)
+                _log.setLevel(_logging.DEBUG)
+                _log.addHandler(_ai_handler)
+
+            console.print(
+                f"[dim][AI debug] Running AI on {len(eligible)} sender(s): "
+                + ", ".join(r.sender.sender_email for r in eligible)
+                + "[/dim]"
+            )
+            for rec in eligible:
+                _text = f"From: {rec.sender.sender_name or rec.sender.sender_email}\n" + "\n".join(
+                    rec.sender.sample_subjects[:3]
+                )
+                console.print(
+                    f"[dim][AI debug] prompt for {rec.sender.sender_email}:\n{_text}[/dim]"
+                )
+
+        with console.status("[dim][AI] Analyzing senders via local model…[/dim]"):
+            texts = [
+                f"From: {rec.sender.sender_name or rec.sender.sender_email}\n"
+                + "\n".join(rec.sender.sample_subjects[:3])
+                for rec in eligible
+            ]
+            keys = [rec.sender.sender_email for rec in eligible]
+            _ai_client_override = _get_ai_client_opt(ai_backend, ai_url, ai_model)
+            results = analyze_batch(texts, cache_keys=keys, ai_client=_ai_client_override)
+
+        for rec, result in zip(eligible, results):
+            if ai_debug:
+                console.print(
+                    f"[dim][AI debug] {rec.sender.sender_email}: "
+                    f"{'parsed OK → ' + str(result) if result else 'no result (parse failed or backend unavailable)'}[/dim]"
+                )
+            ai_insights[rec.sender.sender_email] = result
 
         if ai_insights:
             from mailtrim.core.llm import apply_impact_nudge
@@ -568,7 +790,31 @@ def stats(
     if recommendations:
         from mailtrim.core.llm import format_ai_line  # always available
 
-        for i, rec in enumerate(recommendations, 1):
+        # AI summary block — one concise insight line per sender with AI data
+        if use_ai and ai_insights:
+            _AI_CAT_DESC: dict[str, str] = {
+                "promo": "looks promotional",
+                "spam": "appears spam-like",
+                "update": "appears to be automated updates",
+                "important": "may contain important content",
+            }
+            _ai_lines = []
+            for rec in recommendations:
+                _ai = ai_insights.get(rec.sender.sender_email, {})
+                _cat = _ai.get("category", "")
+                _desc = _AI_CAT_DESC.get(_cat, "")
+                if not _desc:
+                    continue
+                # Sensitive senders get a stronger warning regardless of AI category
+                if classify_sender_risk(rec.sender) == "sensitive":
+                    _desc = "may be important — review before deleting"
+                _ai_lines.append(f"  [dim][AI] {rec.sender.display_name[:30]} {_desc}[/dim]")
+            for _line in _ai_lines[:3]:
+                console.print(_line)
+            if _ai_lines:
+                console.print()
+
+        for i, rec in enumerate(recommendations[:3], 1):
             g = rec.sender
             _rec_domain = domain_map_lookup.get(g.domain)
             _rec_count = _rec_domain.count if _rec_domain else g.count
@@ -577,18 +823,12 @@ def stats(
             rule_conf = rec.confidence
 
             # Compute adjusted confidence without mutating rec.confidence.
+            # Cap at 95 — 100% implies certainty we never have.
             delta = confidence_delta(ai) if (use_ai and ai) else 0
-            display_confidence = max(0, min(100, rule_conf + delta))
+            display_confidence = max(0, min(95, rule_conf + delta))
 
-            safety = confidence_safety_label(display_confidence)
-            safety_color = (
-                "green"
-                if display_confidence >= 70
-                else "yellow"
-                if display_confidence >= 40
-                else "red"
-            )
-            icon = risk_tier_icon(display_confidence)
+            safety, icon, safety_color = sender_risk_tier_from_conf(g, display_confidence)
+            conf_desc = confidence_description(display_confidence)
 
             # Reason hint: prefer AI category phrase, fall back to rule-based.
             if use_ai and ai:
@@ -623,17 +863,18 @@ def stats(
             console.print(
                 f"  [bold]{i}. {g.display_name[:40]}[/bold]  "
                 f"[dim]{_rec_count} emails · {_rec_size_mb} MB · {g.age_str}[/dim]\n"
-                f"  {icon} Confidence: {conf_str}  "
-                f"[{safety_color}]{safety}[/{safety_color}]{reason_hint}"
+                f"  {icon} [{safety_color}]{safety}[/{safety_color}]  "
+                f"Confidence: {conf_str} [dim]— {conf_desc}[/dim]{reason_hint}"
             )
             if use_ai and ai:
                 console.print(f"  [dim]{format_ai_line(ai)}[/dim]")
             for action in rec.actions:
-                savings_str = (
-                    f"[green]~{action.savings_mb} MB freed[/green]"
-                    if action.savings_mb > 0
-                    else "[dim]no storage change[/dim]"
-                )
+                if action.savings_mb > 0:
+                    savings_str = f"[green]~{action.savings_mb} MB freed[/green]"
+                elif "review" in action.label.lower():
+                    savings_str = "[yellow]Review manually before deciding[/yellow]"
+                else:
+                    savings_str = "[dim]Preview items safely before deleting[/dim]"
                 tilde = "" if action.savings_exact else "~"
                 time_est = format_time_estimate(_rec_count)
                 console.print(
@@ -641,17 +882,149 @@ def stats(
                     f"{tilde}{savings_str}  [dim]takes {time_est}[/dim]"
                 )
                 console.print(f"      [cyan]{action.command}[/cyan]")
+                _expl = _action_explanation(action.label, g.domain)
+                if _expl:
+                    console.print(f"      [dim]{_expl}[/dim]")
             console.print()
-        console.print("[dim]  All deletions go to Trash — undo anytime with: mailtrim undo[/dim]\n")
+        console.print(
+            "[dim]  All emails moved to Trash (recoverable) — undo anytime with: mailtrim undo[/dim]\n"
+        )
     else:
         console.print("  [dim]Not enough data for recommendations.[/dim]\n")
 
     console.print(
-        "[dim]  Or explore interactively:[/dim]\n"
-        "  [cyan]mailtrim purge[/cyan]              — pick senders to delete interactively\n"
+        "[dim]  Next steps:[/dim]\n"
+        "  [cyan]mailtrim purge[/cyan]              — pick senders to move to Trash interactively\n"
         "  [cyan]mailtrim stats --sort size[/cyan]  — re-sort by storage\n"
-        "  [cyan]mailtrim stats --share[/cyan]      — copy a shareable summary\n"
-        "  [cyan]mailtrim triage[/cyan]             — AI-powered inbox classification\n"
+        "  [cyan]mailtrim stats --verbose[/cyan]    — full account summary + all senders\n"
+        "  [cyan]mailtrim stats --simple[/cyan]     — plain-language view, no scores\n"
+        "  [cyan]mailtrim quickstart[/cyan]         — guided first cleanup\n"
+    )
+
+
+# ── quickstart ───────────────────────────────────────────────────────────────
+
+
+@app.command()
+def quickstart():
+    """
+    Guided first cleanup — checks auth, scans inbox, and suggests your first safe action.
+
+    Perfect for first-time users. Run this before anything else.
+    """
+    import time as _time
+
+    from mailtrim.core.sender_stats import (
+        best_next_step,
+        classify_sender_risk,
+        fetch_sender_groups,
+        generate_recommendations,
+        group_by_domain,
+        reclaimable_mb,
+    )
+
+    # Step 1: Check auth
+    console.print()
+    console.print(
+        Panel.fit(
+            "[bold cyan]mailtrim quickstart[/bold cyan]\n\n"
+            "This will scan your inbox and suggest your first safe cleanup.\n"
+            "[dim]Nothing is deleted until you run the suggested command.[/dim]",
+            border_style="cyan",
+        )
+    )
+    console.print()
+
+    try:
+        client = _get_client()
+        account_email = _get_account_email(client)
+        console.print(f"[green]✓ Authenticated[/green] as [bold]{account_email}[/bold]")
+    except Exception:
+        console.print(
+            "[red]✗ Not authenticated.[/red]\n\n"
+            "Run [cyan]mailtrim auth[/cyan] first to connect your Gmail account.\n"
+        )
+        raise typer.Exit(1)
+
+    # Step 2: Quick scan
+    console.print()
+    _t0 = _time.time()
+    with console.status("Scanning your inbox for quick wins…"):
+        groups = fetch_sender_groups(
+            client,
+            query="in:inbox",
+            max_messages=500,
+            min_count=2,
+            top_n=20,
+            sort_by="score",
+        )
+        domain_groups = group_by_domain(groups)
+        domain_map_lookup = {d.domain: d for d in domain_groups}
+        recommendations = generate_recommendations(groups, top_n=5, domain_map=domain_map_lookup)
+        bns = best_next_step(recommendations)
+        total_reclaimable = reclaimable_mb(recommendations)
+
+    elapsed = round(_time.time() - _t0, 1)
+    console.print(f"[dim]  Scanned {len(groups)} senders in {elapsed}s[/dim]\n")
+
+    # Step 3: Explain what we found
+    if not recommendations:
+        console.print(
+            Panel(
+                "[green]Your inbox looks clean![/green]\n\n"
+                "Nothing obvious to remove right now.\n"
+                "[dim]Run [bold]mailtrim stats[/bold] anytime for a full analysis.[/dim]",
+                border_style="green",
+            )
+        )
+        return
+
+    console.print(
+        Panel(
+            f"Found [bold]{len(recommendations)}[/bold] sender(s) worth reviewing  ·  "
+            f"up to [bold green]~{total_reclaimable} MB[/bold green] reclaimable\n\n"
+            "[dim]All emails go to Trash (recoverable for 30 days). Nothing permanent.[/dim]",
+            title="[bold]What we found",
+            border_style="cyan",
+        )
+    )
+    console.print()
+
+    # Step 4: Surface the single best first action
+    if bns and bns.actions:
+        g = bns.sender
+        _domain_grp = domain_map_lookup.get(g.domain)
+        _count = _domain_grp.count if _domain_grp else g.count
+        action = bns.actions[0]
+        risk_class = classify_sender_risk(g)
+        safety_msg = (
+            "This sender looks safe to clean — unsubscribe-style mail."
+            if risk_class == "safe"
+            else "This sender looks low-risk but worth a quick look first."
+            if risk_class == "review"
+            else "This sender may have important mail — review before deleting."
+        )
+
+        console.print(
+            Panel(
+                f"[bold]Your first suggested cleanup:[/bold]\n\n"
+                f"  [bold]{g.display_name[:50]}[/bold]  [dim]({_count} emails)[/dim]\n\n"
+                f"  {safety_msg}\n\n"
+                f"  Run this command:\n"
+                f"  [bold cyan]{action.command}[/bold cyan]\n\n"
+                f"[dim]  After reviewing, you can run it without --dry-run to move emails to Trash.[/dim]",
+                title="[bold green]Suggested first action",
+                border_style="green",
+                padding=(0, 2),
+            )
+        )
+        console.print()
+
+    console.print(
+        "[dim]  Ready for more? Try:[/dim]\n"
+        "  [cyan]mailtrim stats[/cyan]          — full analysis with all recommendations\n"
+        "  [cyan]mailtrim purge[/cyan]          — interactive cleanup picker\n"
+        "  [cyan]mailtrim stats --simple[/cyan] — plain-language view\n"
     )
 
 
@@ -990,10 +1363,19 @@ def undo(
             console.print("[dim]Cancelled.[/dim]")
             return
 
-    with console.status("Reversing operation..."):
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as prog:
+        t = prog.add_task("Restoring emails…", total=None)
         count = engine.undo(log_id)
+        prog.update(t, description="Done.")
 
-    console.print(f"[green]Restored {count} messages.[/green]")
+    try:
+        from mailtrim.core.usage_stats import record_undo
+
+        record_undo(restored=count)
+    except Exception:
+        pass
+
+    console.print(f"[green]✓ Restored {count} emails.[/green]")
 
     # Offer to protect the senders so this doesn't happen again
     senders = entry.op_metadata.get("senders", [])
@@ -1026,7 +1408,7 @@ def follow_up(
     sync_replies: bool = typer.Option(False, "--sync", "-s", help="Sync reply detection."),
 ):
     """
-    Track an email for follow-up. Only reminds you if they haven't replied.
+    [EXPERIMENTAL] Track an email for follow-up. Only reminds you if they haven't replied.
 
     Examples:
       mailtrim follow-up 18bca72... --days 5
@@ -1104,7 +1486,7 @@ def avoid(
     no_insights: bool = typer.Option(False, "--no-insights", help="Skip AI insight generation."),
 ):
     """
-    Show emails you've been putting off — viewed multiple times but never acted on.
+    [EXPERIMENTAL] Show emails you've been putting off — viewed multiple times but never acted on.
     AI explains why you might be avoiding them and suggests one action.
     """
     from mailtrim.core.avoidance import AvoidanceDetector
@@ -1323,7 +1705,7 @@ def rules(
 
 @app.command()
 def digest():
-    """Generate your weekly inbox digest — insights, action items, and one cleanup suggestion."""
+    """[EXPERIMENTAL] Generate your weekly inbox digest — insights, action items, and one cleanup suggestion."""
     from collections import Counter
 
     from mailtrim.core.avoidance import AvoidanceDetector
@@ -1410,13 +1792,17 @@ def _print_cleanup_complete(
         border = "red"
         title = "🗑  Cleanup Complete"
     else:
-        undo_hint = f"  [dim]Undo: mailtrim undo {undo_id}[/dim]" if undo_id is not None else ""
+        undo_line = (
+            f"\n  [bold]Undo anytime:[/bold] [cyan]mailtrim undo {undo_id}[/cyan]"
+            if undo_id is not None
+            else "\n  [cyan]mailtrim undo[/cyan] — see recent operations"
+        )
         body = (
-            f"Moved [bold]{email_count:,} emails[/bold] to Trash  ·  "
+            f"[green]✓ Moved {email_count:,} emails to Trash[/green]  ·  "
             f"freed [bold green]~{freed_mb} MB[/bold green]  ·  took [bold]{elapsed_seconds}s[/bold]\n"
             f"Senders: [dim]{names_str}[/dim]\n"
             f"[dim]Gmail Trash shows threads, not messages — visible count there will be lower.[/dim]"
-            + undo_hint
+            + undo_line
         )
         border = "green"
         title = "🎉  Cleanup Complete"
@@ -1469,7 +1855,16 @@ def purge(
         False, "--unsub", help="Also unsubscribe from selected senders."
     ),
     permanent: bool = typer.Option(
-        False, "--permanent", help="Permanently delete (skip Trash). IRREVERSIBLE."
+        False,
+        "--permanent",
+        help="Permanently delete (skip Trash). IRREVERSIBLE.",
+        hidden=True,
+    ),
+    i_understand_permanent: bool = typer.Option(
+        False,
+        "--i-understand-permanent",
+        help="Required second flag when using --permanent.",
+        hidden=True,
     ),
     json_output: bool = typer.Option(
         False, "--json", help="Output sender list as JSON and exit (no deletion)."
@@ -1491,8 +1886,9 @@ def purge(
     provider: str = typer.Option("gmail", "--provider", help="Email provider: gmail or imap."),
     imap_server: str = typer.Option("", "--imap-server", help="IMAP server hostname."),
     imap_user: str = typer.Option("", "--imap-user", help="IMAP login username."),
-    imap_password: str = typer.Option(
-        "", "--imap-password", help="IMAP app password.", hide_input=True
+    imap_port: int = typer.Option(993, "--imap-port", help="IMAP SSL port (default 993)."),
+    imap_folder: str = typer.Option(
+        "INBOX", "--imap-folder", help="IMAP folder to scan (default INBOX)."
     ),
     ai_backend: str = typer.Option(
         "llama", "--ai-backend", help="Local AI backend: llama or ollama."
@@ -1501,10 +1897,10 @@ def purge(
     ai_model: str = typer.Option("phi3", "--ai-model", help="Model name (Ollama only)."),
 ):
     """
-    Show top email offenders and bulk-delete the ones you choose.
+    Move top email senders to Trash — with a 30-day undo window.
 
     Scans your promotions/newsletters, ranks senders, lets you pick which
-    ones to delete — with a 30-day undo window.
+    ones to move to Trash. All deletions are recoverable for 30 days.
 
     Examples:
       mailtrim purge
@@ -1516,6 +1912,8 @@ def purge(
       mailtrim purge --query "category:promotions" --top 20
       mailtrim purge --unsub   # also unsubscribe while deleting
     """
+    _record("purge")
+    import os as _os
     import time as _time
 
     from mailtrim.core.sender_stats import compute_confidence_score, fetch_sender_groups
@@ -1523,11 +1921,31 @@ def purge(
     from mailtrim.core.unsubscribe import UnsubscribeEngine
     from mailtrim.core.validation import validate_domain, validate_older_than
 
+    # Guard: --permanent requires the explicit confirmation flag to prevent accidents.
+    if permanent and not i_understand_permanent:
+        console.print(
+            Panel(
+                "[bold red]--permanent requires --i-understand-permanent[/bold red]\n\n"
+                "Permanent deletion bypasses Trash and cannot be undone.\n"
+                "If you really mean it, add [bold]--i-understand-permanent[/bold] to your command.\n\n"
+                "[dim]Tip: omit --permanent to move to Trash instead (recoverable for 30 days).[/dim]",
+                border_style="red",
+            )
+        )
+        raise typer.Exit(1)
+
+    # Resolve IMAP password: env var → interactive prompt (never CLI flag)
+    imap_password = _os.environ.get("MAILTRIM_IMAP_PASSWORD", "")
+    if provider == "imap" and imap_user and not imap_password:
+        imap_password = typer.prompt(f"IMAP password for {imap_user}", hide_input=True, default="")
+
     client = _get_provider(
         provider=provider,
         imap_server=imap_server,
         imap_user=imap_user,
         imap_password=imap_password,
+        imap_port=imap_port,
+        imap_folder=imap_folder,
     )
     account_email = _get_account_email(client)
 
@@ -1746,7 +2164,10 @@ def purge(
         ]
         if eligible_groups:
             with console.status("[dim][AI] Analyzing senders via local model…[/dim]"):
-                texts = ["\n".join(g.sample_subjects) for g in eligible_groups]
+                texts = [
+                    f"From: {g.sender_name or g.sender_email}\n" + "\n".join(g.sample_subjects[:3])
+                    for g in eligible_groups
+                ]
                 keys = [g.sender_email for g in eligible_groups]
                 _purge_ai_client = _get_ai_client_opt(ai_backend, ai_url, ai_model)
                 ai_results = analyze_batch(texts, cache_keys=keys, ai_client=_purge_ai_client)
@@ -1811,7 +2232,7 @@ def purge(
                 action = ai.get("action", "")
                 rule_conf = compute_confidence_score(g)
                 delta = confidence_delta(ai)
-                adj_conf = max(0, min(100, rule_conf + delta))
+                adj_conf = max(0, min(95, rule_conf + delta))
                 sign = "+" if delta > 0 else ""
                 delta_str = f"{sign}{delta}%" if delta != 0 else ""
                 ai_cell = (
@@ -1860,20 +2281,21 @@ def purge(
     if permanent:
         console.print(
             Panel(
-                f"[bold red]WARNING — THIS CANNOT BE UNDONE[/bold red]\n\n"
-                f"You are about to [bold]permanently delete {sel_msgs} emails[/bold] "
+                f"[bold red]⚠  PERMANENT DELETION — THIS CANNOT BE UNDONE  ⚠[/bold red]\n\n"
+                f"You are about to [bold]permanently erase {sel_msgs} emails[/bold] "
                 f"from {len(selected)} sender(s).\n"
-                f"They will NOT go to Trash. There is no recovery.\n\n"
-                f"[dim]Remove --permanent to move to Trash instead (recoverable for 30 days).[/dim]",
+                f"They will [bold]NOT[/bold] go to Trash. There is [bold]no recovery, no undo[/bold].\n\n"
+                f"[dim]Omit --permanent to move to Trash instead (recoverable for 30 days).[/dim]",
                 border_style="red",
+                title="[bold red]IRREVERSIBLE ACTION",
             )
         )
         if not yes:
-            # Require typing "delete permanently" to confirm — not just Enter
+            # Require typing "DELETE FOREVER" to confirm — not just Enter
             answer = Prompt.ask(
-                '[bold red]Type "delete permanently" to confirm, or anything else to cancel[/bold red]'
+                '[bold red]Type "DELETE FOREVER" to confirm, or anything else to cancel[/bold red]'
             )
-            if answer.strip().lower() != "delete permanently":
+            if answer.strip() != "DELETE FOREVER":
                 console.print("[dim]Cancelled.[/dim]")
                 return
     else:
@@ -1925,6 +2347,15 @@ def purge(
 
     freed_mb = round(sum(g.total_size_bytes for g in selected) / (1024 * 1024), 1)
     sender_names = [g.display_name[:30] for g in selected[:3]]
+
+    if not permanent:
+        try:
+            from mailtrim.core.usage_stats import record_emails_trashed
+
+            record_emails_trashed(deleted)
+        except Exception:
+            pass
+
     _print_cleanup_complete(
         console=console,
         freed_mb=freed_mb,
@@ -2017,6 +2448,92 @@ def protect(
         f"[green]Protected:[/green] [bold]{sender}[/bold]\n"
         "[dim]This sender will no longer appear in purge lists.[/dim]"
     )
+
+
+# ── doctor ────────────────────────────────────────────────────────────────────
+
+
+@app.command()
+def doctor(
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show full error details."),
+    ai: bool = typer.Option(False, "--ai", help="Also check local AI endpoint."),
+):
+    """
+    Check that mailtrim is configured correctly and ready to use.
+
+    Verifies auth, Gmail connection, storage, and optional AI endpoint.
+    Run this first if something isn't working.
+
+    Examples:
+      mailtrim doctor
+      mailtrim doctor --ai   # also check local AI endpoint
+    """
+    from mailtrim.core.diagnostics import run_all
+
+    console.print()
+    console.print(
+        Panel.fit(
+            f"[bold cyan]mailtrim doctor[/bold cyan]  [dim]v{__version__}[/dim]\n"
+            "[dim]Running system checks…[/dim]",
+            border_style="cyan",
+        )
+    )
+    console.print()
+
+    results = run_all(include_optional=ai)
+
+    required_ok = 0
+    required_fail = 0
+    optional_warn = 0
+
+    for r in results:
+        if r.ok:
+            icon = "[green]✓[/green]"
+            if r.optional:
+                optional_warn = optional_warn  # stays 0 — it passed
+            else:
+                required_ok += 1
+        elif r.optional:
+            icon = "[yellow]⚠[/yellow]"
+            optional_warn += 1
+        else:
+            icon = "[red]✗[/red]"
+            required_fail += 1
+
+        console.print(f"  {icon}  {r.name}")
+        if not r.ok:
+            console.print(f"     [dim]{r.message}[/dim]")
+            if r.fix:
+                console.print(f"     [cyan]Fix: {r.fix}[/cyan]")
+        elif verbose:
+            console.print(f"     [dim]{r.message}[/dim]")
+
+    console.print()
+    if required_fail == 0:
+        status_text = "[bold green]Ready[/bold green]"
+        border = "green"
+        hint = "You're all set — try: mailtrim quickstart"
+    else:
+        status_text = "[bold red]Needs Attention[/bold red]"
+        border = "red"
+        hint = "Fix the issues above, then re-run: mailtrim doctor"
+
+    if optional_warn:
+        note = f"  [dim]{optional_warn} optional check(s) not passing — these won't block usage.[/dim]\n"
+    else:
+        note = ""
+
+    console.print(
+        Panel(
+            f"Overall status: {status_text}\n{note}  [dim]{hint}[/dim]",
+            border_style=border,
+            padding=(0, 2),
+        )
+    )
+    console.print()
+
+    if required_fail > 0:
+        raise typer.Exit(1)
 
 
 # ── version ───────────────────────────────────────────────────────────────────
