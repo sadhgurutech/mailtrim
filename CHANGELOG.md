@@ -9,10 +9,41 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+---
+
+## [0.2.1] — 2026-04-11
+
 ### Added
-- `--scope anywhere` flag on `stats`, `purge`, and `sync` — scans all mail
-  (`in:anywhere -in:trash -in:spam`), not just inbox. Surfaces hidden bloat
-  in archived, sent, and all-mail folders. Most storage waste is not in inbox.
+- `mailtrim doctor` — health check command: verifies auth token, Gmail connection,
+  Trash access, data directory, undo storage, config, and optional local AI endpoint.
+  Prints ✓/⚠/✗ per check with actionable fix hints. Exits non-zero when required checks fail.
+- `mailtrim quickstart` — guided first-run command: checks auth, scans 500 messages,
+  explains what was found, surfaces the single safest first cleanup action.
+- `--verbose` / `--simple` flags on `stats`:
+  - `--verbose` shows ACCOUNT SUMMARY, KEY INSIGHTS, domain patterns, full TOP SENDERS table
+  - `--simple` shows plain-language recommendations without scores or tables
+- `mailtrim stats --max-scan` default raised from 300 → 1000 for better coverage
+- Human-readable error messages: 401/expired token, network timeouts, permission errors,
+  rate limits, and database corruption all show plain-language guidance instead of raw tracebacks
+- Local-only usage metrics (`~/.mailtrim/usage.json`): command runs, emails trashed,
+  undo count, first run date — never uploaded, used only for local product insight
+- `DEMO.md` — 60-second demo script for recording an asciinema/vhs walkthrough
+
+### Changed
+- `--permanent` flag on `purge` is now hidden from `--help` and requires a second
+  `--i-understand-permanent` flag; confirmation phrase changed to `DELETE FOREVER`
+- `--imap-password` CLI flag removed from `stats` and `purge` — now read from
+  `MAILTRIM_IMAP_PASSWORD` env var or interactive hidden prompt (no shell history leak)
+- `purge` docstring: "delete" → "move to Trash (recoverable)"
+- `stats` docstring: "delete" → "move to Trash"
+- `_action_explanation()` now says "Moves … to Trash (recoverable)" instead of "Deletes"
+- `digest`, `avoid`, `follow-up`, and `stats --ai` marked `[EXPERIMENTAL]` in help text
+- `undo` completion message: "Restored X emails" with progress spinner
+- `_print_cleanup_complete`: undo hint is now bold and prominent
+
+### Fixed
+- `test_confidence_safety_label_medium` and `_low` tests updated to match current
+  `confidence_safety_label()` return values ("Needs review", "Sensitive / personal")
 
 ---
 
