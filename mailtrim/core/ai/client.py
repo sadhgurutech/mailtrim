@@ -41,8 +41,12 @@ class AIClient:
         Returns "" on any failure (network error, timeout, parse error).
         Callers must treat "" as "no AI signal" and fall back to rule-based logic.
         """
+        truncated = prompt[:600]
+        logger.debug("→ prompt sent (%d chars): %s", len(truncated), truncated[:120])
         try:
-            return self._post(prompt[:600])  # hard truncation before sending
+            result = self._post(truncated)
+            logger.debug("← raw response: %r", result)
+            return result
         except urllib.error.URLError as exc:
             logger.debug("%s unavailable (URLError): %s", self.__class__.__name__, exc)
         except TimeoutError as exc:
@@ -53,6 +57,7 @@ class AIClient:
             logger.debug(
                 "%s request failed (%s): %s", self.__class__.__name__, type(exc).__name__, exc
             )
+        logger.debug("← no response (failure)")
         return ""
 
     def _post(self, prompt: str) -> str:

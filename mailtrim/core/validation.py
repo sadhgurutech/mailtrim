@@ -82,9 +82,7 @@ def validate_older_than(days: int) -> int:
     Raises typer.BadParameter on failure.
     """
     if days <= 0:
-        raise typer.BadParameter(
-            f"--older-than must be a positive number of days (got {days})."
-        )
+        raise typer.BadParameter(f"--older-than must be a positive number of days (got {days}).")
     if days > _MAX_OLDER_THAN_DAYS:
         raise typer.BadParameter(
             f"--older-than value {days} exceeds 100 years — did you mean something else?"

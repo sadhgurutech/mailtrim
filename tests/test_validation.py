@@ -5,8 +5,8 @@ import typer
 
 from mailtrim.core.validation import validate_domain, validate_older_than, validate_sender_email
 
-
 # ── validate_domain ───────────────────────────────────────────────────────────
+
 
 class TestValidateDomain:
     def test_simple_domain(self):
@@ -69,6 +69,7 @@ class TestValidateDomain:
 
 # ── validate_sender_email ─────────────────────────────────────────────────────
 
+
 class TestValidateSenderEmail:
     def test_valid_email(self):
         assert validate_sender_email("user@example.com") == "user@example.com"
@@ -97,6 +98,7 @@ class TestValidateSenderEmail:
 
 
 # ── validate_older_than ───────────────────────────────────────────────────────
+
 
 class TestValidateOlderThan:
     def test_valid_positive(self):

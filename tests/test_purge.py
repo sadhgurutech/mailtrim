@@ -486,15 +486,15 @@ def test_confidence_safety_label_high():
 def test_confidence_safety_label_medium():
     from mailtrim.core.sender_stats import confidence_safety_label
 
-    assert confidence_safety_label(40) == "Low risk"
-    assert confidence_safety_label(69) == "Low risk"
+    assert confidence_safety_label(40) == "Needs review"
+    assert confidence_safety_label(69) == "Needs review"
 
 
 def test_confidence_safety_label_low():
     from mailtrim.core.sender_stats import confidence_safety_label
 
-    assert confidence_safety_label(0) == "Review first"
-    assert confidence_safety_label(39) == "Review first"
+    assert confidence_safety_label(0) == "Sensitive / personal"
+    assert confidence_safety_label(39) == "Sensitive / personal"
 
 
 # ── impact_label ─────────────────────────────────────────────────────────────
