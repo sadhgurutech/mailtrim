@@ -145,11 +145,10 @@ def check_data_dir() -> CheckResult:
 
 def check_undo_storage() -> CheckResult:
     try:
-        from mailtrim.core.storage import UndoLogRepo, get_session
+        from mailtrim.core.storage import UndoLogEntry, get_session
 
         session = get_session()
-        repo = UndoLogRepo(session)
-        repo.list_recent(limit=1)
+        session.query(UndoLogEntry).limit(1).all()
         return CheckResult("Undo storage", ok=True, message="Database readable and writable")
     except Exception as exc:
         return CheckResult(
