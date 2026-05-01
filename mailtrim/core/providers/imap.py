@@ -77,7 +77,7 @@ def _gmail_query_to_imap(query: str) -> tuple[str, str]:
     if m:
         parts.append(f'FROM "{m.group(1)}"')
 
-    # Age filter — older_than:Nd
+    # Age filter — older_than:Nd → BEFORE (exclusive upper bound)
     m = re.search(r"older_than:(\d+)d", query)
     if m:
         days = int(m.group(1))
@@ -85,6 +85,15 @@ def _gmail_query_to_imap(query: str) -> tuple[str, str]:
         dt = datetime.fromtimestamp(cutoff, tz=timezone.utc)
         # IMAP BEFORE uses DD-Mon-YYYY format
         parts.append(f'BEFORE "{dt.strftime("%d-%b-%Y")}"')
+
+    # Since filter — newer_than:Nd → SINCE (inclusive lower bound)
+    m = re.search(r"newer_than:(\d+)d", query)
+    if m:
+        days = int(m.group(1))
+        cutoff = datetime.now(tz=timezone.utc).timestamp() - days * 86400
+        dt = datetime.fromtimestamp(cutoff, tz=timezone.utc)
+        # IMAP SINCE uses DD-Mon-YYYY format
+        parts.append(f'SINCE "{dt.strftime("%d-%b-%Y")}"')
 
     # Subject filter
     m = re.search(r'subject:"([^"]+)"', query)

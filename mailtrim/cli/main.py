@@ -514,6 +514,11 @@ def stats(
     simple: bool = typer.Option(
         False, "--simple", help="Plain-language output — no scores or tables."
     ),
+    since: str = typer.Option(
+        "",
+        "--since",
+        help="Only scan emails received within the last N days. Format: 30d, 7d.",
+    ),
 ):
     """
     Inbox decision engine — reclaimable space, confidence-scored recommendations, top senders.
@@ -526,6 +531,7 @@ def stats(
       mailtrim stats --sort size
       mailtrim stats --scope anywhere   # include archived and sent mail
       mailtrim stats --max-scan 5000    # scan more of a large mailbox
+      mailtrim stats --since 30d        # only emails from the last 30 days
       mailtrim stats --share              # twitter-style summary (≤280 chars)
       mailtrim stats --share --format plain  # plain-text version
     """
@@ -560,6 +566,18 @@ def stats(
     else:
         mail_query = "in:inbox"
         scope_label = "inbox"
+
+    from mailtrim.core.validation import validate_since
+
+    since_days: int | None = None
+    if since:
+        try:
+            since_days = validate_since(since)
+        except typer.BadParameter as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(1)
+        mail_query += f" newer_than:{since_days}d"
+        scope_label += f" · last {since_days}d"
 
     scan_start = _time.time()
 
@@ -731,9 +749,10 @@ def stats(
             f"[dim]({insights.total_scanned:,} emails · {insights.unique_senders} senders)[/dim]"
         )
     else:
+        _since_note = f" · last {since_days}d" if since_days else ""
         console.print(
             f"[dim]  ✨ Scan complete — analyzed {insights.total_scanned:,} emails "
-            f"across {insights.unique_senders} senders in {scan_elapsed}s[/dim]"
+            f"across {insights.unique_senders} senders in {scan_elapsed}s{_since_note}[/dim]"
         )
     console.print()
 
@@ -2192,6 +2211,11 @@ def purge(
     ),
     ai_url: str = typer.Option("", "--ai-url", help="Override local AI server URL."),
     ai_model: str = typer.Option("phi3", "--ai-model", help="Model name (Ollama only)."),
+    since: str = typer.Option(
+        "",
+        "--since",
+        help="Only scan emails received within the last N days. Format: 30d, 7d.",
+    ),
 ):
     """
     Move top email senders to Trash — with a 30-day undo window.
@@ -2205,6 +2229,8 @@ def purge(
       mailtrim purge --domain linkedin.com --yes
       mailtrim purge --domain linkedin.com --keep 10
       mailtrim purge --domain linkedin.com --older-than 90
+      mailtrim purge --domain linkedin.com --since 30d   # only last 30 days
+      mailtrim purge --since 7d                          # emails from last 7 days
       mailtrim purge --domain linkedin.com --yes --share
       mailtrim purge --query "category:promotions" --top 20
       mailtrim purge --unsub   # also unsubscribe while deleting
@@ -2216,7 +2242,7 @@ def purge(
     from mailtrim.core.sender_stats import compute_confidence_score, fetch_sender_groups
     from mailtrim.core.storage import UndoLogRepo, get_session
     from mailtrim.core.unsubscribe import UnsubscribeEngine
-    from mailtrim.core.validation import validate_domain, validate_older_than
+    from mailtrim.core.validation import validate_domain, validate_older_than, validate_since
 
     # Guard: --permanent requires the explicit confirmation flag to prevent accidents.
     if permanent and not i_understand_permanent:
@@ -2252,11 +2278,23 @@ def purge(
     if older_than is not None:
         older_than = validate_older_than(older_than)
 
+    since_days: int | None = None
+    if since:
+        try:
+            since_days = validate_since(since)
+        except typer.BadParameter as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(1)
+
     # --scope prepends a scope filter to the query unless --query is explicitly set
     if scope == "anywhere" and query == "category:promotions OR label:newsletters":
         query = "in:anywhere -in:trash -in:spam"
     elif scope == "anywhere":
         query = f"in:anywhere -in:trash -in:spam {query}"
+
+    # --since appends a date lower bound to whatever query is in use
+    if since_days:
+        query += f" newer_than:{since_days}d"
 
     # --domain builds a targeted query and routes to non-interactive mode.
     # Scope filter is always applied so the count matches what stats showed.
@@ -2267,6 +2305,8 @@ def purge(
             effective_query = f"in:inbox from:{domain}"
         if older_than:
             effective_query += f" older_than:{older_than}d"
+        if since_days:
+            effective_query += f" newer_than:{since_days}d"
         query = effective_query
 
     scope_label = "all mail" if scope == "anywhere" else "inbox"
