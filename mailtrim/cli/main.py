@@ -930,11 +930,10 @@ def quickstart():
 
     Perfect for first-time users. Run this before anything else.
     """
-    import time as _time
-
     from mailtrim.core.sender_stats import (
         best_next_step,
         classify_sender_risk,
+        compute_confidence_score,
         fetch_sender_groups,
         generate_recommendations,
         group_by_domain,
@@ -943,107 +942,87 @@ def quickstart():
 
     # Step 1: Check auth
     console.print()
-    console.print(
-        Panel.fit(
-            "[bold cyan]mailtrim quickstart[/bold cyan]\n\n"
-            "This will scan your inbox and suggest your first safe cleanup.\n"
-            "[dim]Nothing is deleted until you run the suggested command.[/dim]",
-            border_style="cyan",
-        )
-    )
-    console.print()
-
     try:
         client = _get_client()
         account_email = _get_account_email(client)
-        console.print(f"[green]✓ Authenticated[/green] as [bold]{account_email}[/bold]")
+        console.print(f"[green]✓[/green] Connected as [bold]{account_email}[/bold]")
     except Exception:
-        console.print(
-            "[red]✗ Not authenticated.[/red]\n\n"
-            "Run [cyan]mailtrim auth[/cyan] first to connect your Gmail account.\n"
-        )
+        console.print("[red]✗ Not authenticated.[/red]  Run [cyan]mailtrim auth[/cyan] first.")
         raise typer.Exit(1)
 
-    # Step 2: Quick scan
-    console.print()
-    _t0 = _time.time()
-    with console.status("Scanning your inbox for quick wins…"):
+    # Step 2: Scan — fetch up to 500 messages from inbox
+    _SCAN_LIMIT = 500
+    with console.status(f"  Scanning up to {_SCAN_LIMIT} emails…"):
         groups = fetch_sender_groups(
             client,
             query="in:inbox",
-            max_messages=500,
+            max_messages=_SCAN_LIMIT,
             min_count=2,
-            top_n=20,
+            top_n=50,
             sort_by="score",
         )
         domain_groups = group_by_domain(groups)
         domain_map_lookup = {d.domain: d for d in domain_groups}
-        recommendations = generate_recommendations(groups, top_n=5, domain_map=domain_map_lookup)
+        recommendations = generate_recommendations(groups, top_n=10, domain_map=domain_map_lookup)
         bns = best_next_step(recommendations)
         total_reclaimable = reclaimable_mb(recommendations)
 
-    elapsed = round(_time.time() - _t0, 1)
-    console.print(f"[dim]  Scanned {len(groups)} senders in {elapsed}s[/dim]\n")
-
-    # Step 3: Explain what we found
-    if not recommendations:
-        console.print(
-            Panel(
-                "[green]Your inbox looks clean![/green]\n\n"
-                "Nothing obvious to remove right now.\n"
-                "[dim]Run [bold]mailtrim stats[/bold] anytime for a full analysis.[/dim]",
-                border_style="green",
-            )
-        )
-        return
+    total_emails = sum(g.count for g in groups)
+    # Safe candidates: non-sensitive recs with confidence >= 50
+    safe_candidates = [
+        r
+        for r in recommendations
+        if classify_sender_risk(r.sender) != "sensitive"
+        and compute_confidence_score(r.sender) >= 50
+    ]
 
     console.print(
-        Panel(
-            f"Found [bold]{len(recommendations)}[/bold] sender(s) worth reviewing  ·  "
-            f"up to [bold green]~{total_reclaimable} MB[/bold green] reclaimable\n\n"
-            "[dim]All emails go to Trash (recoverable for 30 days). Nothing permanent.[/dim]",
-            title="[bold]What we found",
-            border_style="cyan",
+        f"  Scanned [bold]{total_emails:,}[/bold] emails · "
+        f"[bold]{len(safe_candidates)}[/bold] safe senders to clean"
+        + (
+            f" · [green]~{total_reclaimable} MB[/green] reclaimable"
+            if total_reclaimable > 0
+            else ""
         )
     )
     console.print()
 
-    # Step 4: Surface the single best first action
-    if bns and bns.actions:
+    # Step 3: Surface the single best safe action
+    # Only show a command when we have a safe or high-confidence pick
+    if (
+        bns
+        and bns.actions
+        and (
+            classify_sender_risk(bns.sender) != "sensitive"
+            and compute_confidence_score(bns.sender) >= 50
+        )
+    ):
         g = bns.sender
-        _domain_grp = domain_map_lookup.get(g.domain)
-        _count = _domain_grp.count if _domain_grp else g.count
         action = bns.actions[0]
-        risk_class = classify_sender_risk(g)
-        safety_msg = (
-            "This sender looks safe to clean — unsubscribe-style mail."
-            if risk_class == "safe"
-            else "This sender looks low-risk but worth a quick look first."
-            if risk_class == "review"
-            else "This sender may have important mail — review before deleting."
-        )
+        d = domain_map_lookup.get(g.domain)
+        email_count = d.count if d else g.count
+        size_mb = (d.total_size_mb if d else g.total_size_mb) if action.savings_mb > 0 else 0
 
+        size_str = f" · {size_mb} MB" if size_mb > 0 else ""
         console.print(
-            Panel(
-                f"[bold]Your first suggested cleanup:[/bold]\n\n"
-                f"  [bold]{g.display_name[:50]}[/bold]  [dim]({_count} emails)[/dim]\n\n"
-                f"  {safety_msg}\n\n"
-                f"  Run this command:\n"
-                f"  [bold cyan]{action.command}[/bold cyan]\n\n"
-                f"[dim]  After reviewing, you can run it without --dry-run to move emails to Trash.[/dim]",
-                title="[bold green]Suggested first action",
-                border_style="green",
-                padding=(0, 2),
-            )
+            f"  [bold]Best first action[/bold]  "
+            f"[dim]{g.display_name[:45]} — {email_count:,} emails{size_str}[/dim]"
         )
+        console.print(f"    [bold cyan]{action.command}[/bold cyan]")
         console.print()
+        console.print("  [dim]Undo anytime:[/dim]  mailtrim undo")
+        console.print("  [dim]Full analysis:[/dim]  mailtrim stats")
+    elif recommendations:
+        # Recs exist but nothing is high-confidence enough for an auto-suggest
+        console.print(
+            "  Found senders worth reviewing — run [cyan]mailtrim stats[/cyan] to see them."
+        )
+        console.print("  [dim]Undo anytime:[/dim]  mailtrim undo")
+    else:
+        console.print("  [green]Inbox looks clean.[/green]  Nothing to remove right now.")
+        console.print("  [dim]Full analysis:[/dim]  mailtrim stats")
 
-    console.print(
-        "[dim]  Ready for more? Try:[/dim]\n"
-        "  [cyan]mailtrim stats[/cyan]          — full analysis with all recommendations\n"
-        "  [cyan]mailtrim purge[/cyan]          — interactive cleanup picker\n"
-        "  [cyan]mailtrim stats --simple[/cyan] — plain-language view\n"
-    )
+    console.print()
 
 
 # ── sync ─────────────────────────────────────────────────────────────────────
