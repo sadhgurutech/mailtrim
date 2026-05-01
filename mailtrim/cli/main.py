@@ -794,6 +794,13 @@ def stats(
             from mailtrim.core.llm import apply_impact_nudge
 
             apply_impact_nudge(groups, ai_insights)
+        else:
+            console.print(
+                "[yellow]⚠ Local AI unavailable[/yellow] — results shown without AI enrichment.\n"
+                f"  Is {'Ollama' if ai_backend == 'ollama' else 'llama.cpp'} running? "
+                f"Expected at {ai_url or ('http://localhost:11434' if ai_backend == 'ollama' else 'http://localhost:8080')}\n"
+                "  [dim]Results are still accurate — AI only adjusts confidence scores.[/dim]"
+            )
 
     if recommendations:
         from mailtrim.core.llm import format_ai_line  # always available
@@ -2198,6 +2205,12 @@ def purge(
             from mailtrim.core.llm import apply_impact_nudge
 
             apply_impact_nudge(groups, purge_ai_insights)
+        elif eligible_groups:
+            console.print(
+                "[yellow]⚠ Local AI unavailable[/yellow] — confidence scores not adjusted.\n"
+                f"  Is {'Ollama' if ai_backend == 'ollama' else 'llama.cpp'} running? "
+                f"Expected at {ai_url or ('http://localhost:11434' if ai_backend == 'ollama' else 'http://localhost:8080')}"
+            )
 
     console.print()
     table = Table(
