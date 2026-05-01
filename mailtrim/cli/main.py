@@ -80,6 +80,22 @@ def _print_ai_data_notice(what: str) -> None:
     )
 
 
+def _cloud_ai_warning() -> None:
+    """Print a prominent warning before any cloud AI call that may send email data."""
+    from rich.panel import Panel
+
+    console.print(
+        Panel(
+            "[bold yellow]⚠  Cloud AI is enabled[/bold yellow]\n"
+            "[dim]This command will send email subjects and/or snippets to Anthropic's servers.\n"
+            "No full email bodies are transmitted. See PRIVACY.md for details.\n\n"
+            "To disable:  [cyan]mailtrim config ai-mode off[/cyan][/dim]",
+            border_style="yellow",
+            padding=(0, 2),
+        )
+    )
+
+
 def _get_account_email(client) -> str:
     return client.get_email_address()
 
@@ -122,7 +138,10 @@ def _handle_error(exc: Exception, verbose: bool = False) -> None:
     from mailtrim.core.errors import friendly_error
 
     if isinstance(exc, AIModeError):
-        console.print(f"\n[yellow]AI blocked:[/yellow] {exc}")
+        lines = str(exc).strip().splitlines()
+        console.print(f"\n[bold yellow]AI blocked:[/bold yellow] {lines[0]}")
+        for line in lines[1:]:
+            console.print(f"  [dim]{line}[/dim]")
         raise typer.Exit(1)
 
     human_msg, fix_hint = friendly_error(exc)
@@ -741,6 +760,10 @@ def stats(
         console.print_json(json_lib.dumps(data))
         return
 
+    from mailtrim.core.ai.mode import ai_status_line
+
+    ai_label, ai_note, ai_color = ai_status_line(get_settings().ai_mode)
+
     first_run = _is_first_stats_run()
     console.print()
     if first_run:
@@ -754,6 +777,7 @@ def stats(
             f"[dim]  ✨ Scan complete — analyzed {insights.total_scanned:,} emails "
             f"across {insights.unique_senders} senders in {scan_elapsed}s{_since_note}[/dim]"
         )
+    console.print(f"  [{ai_color}]AI: {ai_label}[/{ai_color}]  [dim]{ai_note}[/dim]")
     console.print()
 
     # ── Headline Insight ──────────────────────────────────────────────────────
@@ -1294,6 +1318,13 @@ def quickstart():
             else ""
         )
     )
+
+    from mailtrim.core.ai.mode import ai_status_line
+
+    _qs_ai_label, _qs_ai_note, _qs_ai_color = ai_status_line(get_settings().ai_mode)
+    console.print(
+        f"  [{_qs_ai_color}]AI: {_qs_ai_label}[/{_qs_ai_color}]  [dim]{_qs_ai_note}[/dim]"
+    )
     console.print()
 
     # Step 3: Surface the single best safe action
@@ -1421,7 +1452,11 @@ def triage(
     """AI-powered inbox triage with explanations for every decision."""
     from mailtrim.core.ai.mode import require_cloud
 
-    require_cloud(get_settings().ai_mode)
+    try:
+        require_cloud(get_settings().ai_mode)
+    except Exception as exc:
+        _handle_error(exc)
+    _cloud_ai_warning()
     from mailtrim.core.avoidance import AvoidanceDetector
 
     client = _get_client()
@@ -1557,7 +1592,11 @@ def bulk(
     from mailtrim.core.ai.mode import require_cloud
     from mailtrim.core.bulk_engine import BulkEngine
 
-    require_cloud(get_settings().ai_mode)
+    try:
+        require_cloud(get_settings().ai_mode)
+    except Exception as exc:
+        _handle_error(exc)
+    _cloud_ai_warning()
     client = _get_client()
     account_email = _get_account_email(client)
     engine = BulkEngine(client, account_email, _get_ai())
@@ -1803,7 +1842,11 @@ def avoid(
     from mailtrim.core.ai.mode import require_cloud
     from mailtrim.core.avoidance import AvoidanceDetector
 
-    require_cloud(get_settings().ai_mode)
+    try:
+        require_cloud(get_settings().ai_mode)
+    except Exception as exc:
+        _handle_error(exc)
+    _cloud_ai_warning()
     client = _get_client()
     account_email = _get_account_email(client)
     detector = AvoidanceDetector(client, account_email, _get_ai())
@@ -2021,7 +2064,11 @@ def digest():
     """[EXPERIMENTAL] Generate your weekly inbox digest — insights, action items, and one cleanup suggestion."""
     from mailtrim.core.ai.mode import require_cloud
 
-    require_cloud(get_settings().ai_mode)
+    try:
+        require_cloud(get_settings().ai_mode)
+    except Exception as exc:
+        _handle_error(exc)
+    _cloud_ai_warning()
     from collections import Counter
 
     from mailtrim.core.avoidance import AvoidanceDetector
@@ -2856,6 +2903,15 @@ def doctor(
             console.print(f"     [dim]{r.message}[/dim]")
 
     console.print()
+
+    from mailtrim.core.ai.mode import ai_status_line
+
+    _dr_ai_label, _dr_ai_note, _dr_ai_color = ai_status_line(get_settings().ai_mode)
+    console.print(
+        f"  [{_dr_ai_color}]AI: {_dr_ai_label}[/{_dr_ai_color}]  [dim]{_dr_ai_note}[/dim]"
+    )
+    console.print()
+
     if required_fail == 0:
         status_text = "[bold green]Ready[/bold green]"
         border = "green"
