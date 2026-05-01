@@ -437,7 +437,13 @@ def auth(
         help="Path to OAuth credentials JSON downloaded from Google Cloud Console.",
     ),
 ):
-    """Authenticate with Gmail (opens browser for OAuth consent)."""
+    """
+    Authenticate with Gmail (opens browser for OAuth consent).
+
+    Examples:
+      mailtrim auth
+      mailtrim auth --credentials ~/Downloads/client_secret.json
+    """
     from mailtrim.core.gmail_client import authenticate
 
     console.print(
@@ -1262,6 +1268,10 @@ def quickstart():
     Guided first cleanup — checks auth, scans inbox, and suggests your first safe action.
 
     Perfect for first-time users. Run this before anything else.
+    All cleanups go to Trash — undo anytime with: mailtrim undo
+
+    Examples:
+      mailtrim quickstart
     """
     from mailtrim.core.sender_stats import (
         best_next_step,
@@ -1378,7 +1388,17 @@ def sync(
         help="Mail scope: 'inbox' (default) or 'anywhere' (includes archived, sent, all mail).",
     ),
 ):
-    """Sync mail metadata to local database."""
+    """
+    Sync mail metadata to local database for fast repeated queries.
+
+    Run before stats or triage when you want to avoid re-fetching from Gmail.
+
+    Examples:
+      mailtrim sync
+      mailtrim sync --limit 500
+      mailtrim sync --query "in:inbox is:unread"
+      mailtrim sync --scope anywhere
+    """
     from mailtrim.core.storage import EmailRecord, EmailRepo, get_session
 
     if scope == "anywhere" and query == "in:inbox":
@@ -1449,7 +1469,17 @@ def triage(
         True, "--actions/--no-actions", help="Show suggested actions."
     ),
 ):
-    """AI-powered inbox triage with explanations for every decision."""
+    """
+    AI-powered inbox triage — classifies each unread email with priority, category, and a one-line reason.
+
+    Requires ai_mode=cloud. Sends email subjects and snippets (≤300 chars) to Anthropic — never full body.
+    Run: mailtrim config ai-mode cloud
+
+    Examples:
+      mailtrim triage
+      mailtrim triage --limit 50
+      mailtrim triage --no-actions
+    """
     from mailtrim.core.ai.mode import require_cloud
 
     try:
@@ -1578,16 +1608,20 @@ def bulk(
     instruction: str = typer.Argument(
         ..., help='Natural language instruction, e.g. "archive all newsletters older than 30 days"'
     ),
-    dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Preview without making changes."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview without making changes."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt."),
 ):
     """
     Execute a bulk operation using natural language.
 
+    All destructive actions move email to Trash (recoverable for 30 days).
+    Requires ai_mode=cloud. Run: mailtrim config ai-mode cloud
+
     Examples:
       mailtrim bulk "archive all newsletters I haven't opened in 60 days"
-      mailtrim bulk "delete all emails from noreply@* older than 1 year"
+      mailtrim bulk "move to Trash all emails from noreply@* older than 1 year"
       mailtrim bulk "label as 'receipts' everything from order confirmation senders"
+      mailtrim bulk "archive LinkedIn notifications" --dry-run   # preview first
     """
     from mailtrim.core.ai.mode import require_cloud
     from mailtrim.core.bulk_engine import BulkEngine
@@ -1657,9 +1691,19 @@ def undo(
     log_id: Optional[int] = typer.Argument(
         None, help="Undo log ID. Omit to see recent operations."
     ),
-    yes: bool = typer.Option(False, "--yes", "-y"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt."),
 ):
-    """Undo a bulk operation within the 30-day window."""
+    """
+    Undo a bulk operation within the 30-day window.
+
+    Restores emails from Trash back to their original location.
+    Each operation is identified by an ID shown at deletion time.
+
+    Examples:
+      mailtrim undo          # list all undoable operations
+      mailtrim undo 3        # restore operation #3
+      mailtrim undo 3 --yes  # restore without prompting
+    """
     from mailtrim.core.bulk_engine import BulkEngine
     from mailtrim.core.storage import UndoLogRepo, get_session
 
@@ -1755,7 +1799,7 @@ def follow_up(
     days: int = typer.Option(3, "--days", "-d", help="Remind in N days if no reply."),
     unconditional: bool = typer.Option(False, "--always", help="Remind even if they reply."),
     list_due: bool = typer.Option(False, "--list", "-l", help="Show due follow-ups."),
-    sync_replies: bool = typer.Option(False, "--sync", "-s", help="Sync reply detection."),
+    sync_replies: bool = typer.Option(False, "--sync", help="Sync reply detection."),
 ):
     """
     [EXPERIMENTAL] Track an email for follow-up. Only reminds you if they haven't replied.
@@ -1830,14 +1874,30 @@ def follow_up(
 @app.command()
 def avoid(
     process: Optional[str] = typer.Option(
-        None, "--process", "-p", help="Gmail ID to process (archive/delete)."
+        None, "--process", "-p", help="Gmail message ID to act on."
     ),
-    action: str = typer.Option("archive", "--action", "-a", help="Action: archive or delete."),
+    action: str = typer.Option(
+        "archive",
+        "--action",
+        "-a",
+        help="Action when processing: archive or trash (move to Trash — recoverable).",
+    ),
     no_insights: bool = typer.Option(False, "--no-insights", help="Skip AI insight generation."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would happen without acting."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt."),
 ):
     """
     [EXPERIMENTAL] Show emails you've been putting off — viewed multiple times but never acted on.
     AI explains why you might be avoiding them and suggests one action.
+
+    Requires ai_mode=cloud. Run: mailtrim config ai-mode cloud
+    All Trash actions are recoverable for 30 days.
+
+    Examples:
+      mailtrim avoid
+      mailtrim avoid --no-insights              # faster, no AI
+      mailtrim avoid --process <id> --action archive
+      mailtrim avoid --process <id> --action trash  # move to Trash
     """
     from mailtrim.core.ai.mode import require_cloud
     from mailtrim.core.avoidance import AvoidanceDetector
@@ -1852,8 +1912,18 @@ def avoid(
     detector = AvoidanceDetector(client, account_email, _get_ai())
 
     if process:
-        detector.process(process, action)
-        console.print(f"[green]{action.capitalize()}d.[/green] Removed from avoidance list.")
+        action_display = "Move to Trash" if action == "trash" else action.capitalize()
+        if dry_run:
+            console.print(f"[dim]Dry run — would {action_display.lower()} message {process}.[/dim]")
+            return
+        if not yes:
+            if not Confirm.ask(f"{action_display} this email?"):
+                console.print("[dim]Cancelled.[/dim]")
+                return
+        effective_action = "delete" if action == "trash" else action
+        detector.process(process, effective_action)
+        result_msg = "Moved to Trash." if action == "trash" else f"{action.capitalize()}d."
+        console.print(f"[green]✓ {result_msg}[/green] Removed from avoidance list.")
         return
 
     if not no_insights:
@@ -1876,7 +1946,9 @@ def avoid(
         if ae.ai_insight:
             panel_content += f"[yellow]{ae.ai_insight}[/yellow]\n"
         panel_content += (
-            f"\n[dim]mailtrim avoid --process {ae.record.gmail_id} --action archive[/dim]"
+            f"\n[dim]mailtrim avoid --process {ae.record.gmail_id} --action archive[/dim]\n"
+            f"[dim]mailtrim avoid --process {ae.record.gmail_id} --action trash  "
+            "(move to Trash — recoverable)[/dim]"
         )
 
         console.print(Panel(panel_content, border_style="red", expand=False))
@@ -1889,17 +1961,29 @@ def avoid(
 def unsubscribe(
     sender: Optional[str] = typer.Argument(None, help="Sender email to unsubscribe from."),
     from_query: Optional[str] = typer.Option(
-        None, "--from-query", "-q", help="Gmail query to find senders."
+        None, "--from-query", "-q", help="Gmail query to find senders to unsubscribe from."
     ),
     no_headless: bool = typer.Option(
         False, "--no-headless", help="Skip Playwright headless fallback."
     ),
     list_history: bool = typer.Option(False, "--history", help="Show unsubscribe history."),
-    limit: int = typer.Option(10, "--limit", "-n"),
+    limit: int = typer.Option(10, "--limit", "-n", help="Max senders to process (default 10)."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show what would be unsubscribed without acting."
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip per-sender confirmation prompt."),
 ):
     """
-    Unsubscribe from email senders using List-Unsubscribe headers + headless browser fallback.
-    Achieves near-100% success vs. the 70-85% of API-only tools.
+    Unsubscribe from email senders via List-Unsubscribe headers and headless browser fallback.
+
+    Uses RFC 8058 one-click unsubscribe when available; falls back to mailto and Playwright.
+    This action is irreversible — unsubscribing cannot be undone.
+
+    Examples:
+      mailtrim unsubscribe newsletters@example.com
+      mailtrim unsubscribe --from-query "label:newsletters" --limit 20
+      mailtrim unsubscribe --from-query "label:newsletters" --dry-run   # preview first
+      mailtrim unsubscribe --history
     """
     from mailtrim.core.unsubscribe import UnsubscribeEngine
 
@@ -1946,14 +2030,26 @@ def unsubscribe(
                         seen_senders.add(msg.sender_email)
                         messages.append(msg)
     else:
-        console.print("Provide a sender email or --from-query.")
+        console.print("[red]Error:[/red] Provide a sender email or --from-query.")
+        console.print("  [dim]Example: mailtrim unsubscribe newsletters@example.com[/dim]")
         raise typer.Exit(1)
 
     if not messages:
         console.print("[yellow]No messages found.[/yellow]")
         return
 
+    if dry_run:
+        console.print(f"[dim]Dry run — would unsubscribe from {len(messages)} sender(s):[/dim]")
+        for msg in messages:
+            console.print(f"  [dim]· {msg.sender_email}[/dim]")
+        console.print("[dim]Remove --dry-run to execute.[/dim]")
+        return
+
     for msg in messages:
+        if not yes:
+            if not Confirm.ask(f"Unsubscribe from [bold]{msg.sender_email}[/bold]?"):
+                console.print("[dim]Skipped.[/dim]")
+                continue
         console.print(f"Unsubscribing from [bold]{msg.sender_email}[/bold]...", end=" ")
         result = engine.unsubscribe(msg, use_headless=not no_headless)
         status = "[green]success[/green]" if result.success else "[red]failed[/red]"
@@ -1970,7 +2066,9 @@ def rules(
     run: bool = typer.Option(False, "--run", "-r", help="Run all active rules now."),
     list_rules: bool = typer.Option(False, "--list", "-l", help="List all active rules."),
     remove_id: Optional[int] = typer.Option(None, "--remove", help="Deactivate a rule by ID."),
-    dry_run: bool = typer.Option(False, "--dry-run", "-n"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Preview rule execution without making changes."
+    ),
 ):
     """
     Manage recurring automation rules defined in natural language.
@@ -2061,7 +2159,15 @@ def rules(
 
 @app.command()
 def digest():
-    """[EXPERIMENTAL] Generate your weekly inbox digest — insights, action items, and one cleanup suggestion."""
+    """
+    [EXPERIMENTAL] Generate your weekly inbox digest — insights, action items, and one cleanup suggestion.
+
+    Requires ai_mode=cloud. Sends inbox counts and sender names to Anthropic — no subjects or body content.
+    Run: mailtrim config ai-mode cloud
+
+    Examples:
+      mailtrim digest
+    """
     from mailtrim.core.ai.mode import require_cloud
 
     try:
@@ -2203,12 +2309,12 @@ def purge(
     keep: Optional[int] = typer.Option(
         None,
         "--keep",
-        help="Keep the last N emails per sender; delete the rest.",
+        help="Keep the last N emails per sender; move the rest to Trash (recoverable).",
     ),
     older_than: Optional[int] = typer.Option(
         None,
         "--older-than",
-        help="Only delete emails older than this many days.",
+        help="Only move to Trash emails older than this many days.",
     ),
     max_scan: int = typer.Option(2000, "--max-scan", help="Max emails to scan."),
     top: int = typer.Option(30, "--top", "-n", help="How many top offenders to show."),
@@ -2244,7 +2350,7 @@ def purge(
     use_ai: bool = typer.Option(
         False,
         "--ai",
-        help="Adjust confidence scores with local AI signal (requires llama.cpp at localhost:8080).",
+        help="[EXPERIMENTAL] Enrich confidence scores with local AI (requires llama.cpp at localhost:8080).",
     ),
     provider: str = typer.Option("gmail", "--provider", help="Email provider: gmail or imap."),
     imap_server: str = typer.Option("", "--imap-server", help="IMAP server hostname."),
@@ -2254,7 +2360,9 @@ def purge(
         "INBOX", "--imap-folder", help="IMAP folder to scan (default INBOX)."
     ),
     ai_backend: str = typer.Option(
-        "llama", "--ai-backend", help="Local AI backend: llama or ollama."
+        "llama",
+        "--ai-backend",
+        help="Local AI backend: llama (llama.cpp, default) or ollama.",
     ),
     ai_url: str = typer.Option("", "--ai-url", help="Override local AI server URL."),
     ai_model: str = typer.Option("phi3", "--ai-model", help="Model name (Ollama only)."),
