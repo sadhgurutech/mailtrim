@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     avoidance_view_threshold: int = 3  # Views before an email is "avoided"
     follow_up_default_days: int = 3  # Default follow-up reminder window
 
+    # AI mode — controls which AI backends are permitted.
+    # "off"   → no AI calls at all (default, privacy-safe)
+    # "local" → only local backends (Ollama, llama.cpp) — nothing leaves the machine
+    # "cloud" → external API calls allowed (Anthropic); sends email data externally
+    ai_mode: str = "off"
+
     # Rate limiting
     gmail_batch_size: int = 50  # Max messages per Gmail batch request
     ai_max_classify_batch: int = 20  # Emails per AI classification call
