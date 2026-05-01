@@ -203,6 +203,11 @@ def stats(
     ),
     top_n: int = typer.Option(15, "--top", help="Number of top senders to display."),
     share: bool = typer.Option(False, "--share", help="Print a copyable share summary and exit."),
+    share_format: str = typer.Option(
+        "twitter",
+        "--format",
+        help="Share format: twitter (emoji, ≤280 chars) or plain (no emoji).",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON (for scripting)."),
     scope: str = typer.Option(
         "inbox",
@@ -261,7 +266,8 @@ def stats(
       mailtrim stats --sort size
       mailtrim stats --scope anywhere   # include archived and sent mail
       mailtrim stats --max-scan 5000    # scan more of a large mailbox
-      mailtrim stats --share   # get a copyable one-liner to share
+      mailtrim stats --share              # twitter-style summary (≤280 chars)
+      mailtrim stats --share --format plain  # plain-text version
     """
     _record("stats")
     import json as json_lib
@@ -278,7 +284,7 @@ def stats(
         generate_headline_insight,
         generate_insights,
         generate_recommendations,
-        generate_viral_share_text,
+        generate_stats_share_text,
         group_by_domain,
         impact_label,
         quick_win,
@@ -348,28 +354,52 @@ def stats(
 
     # ── Share mode ────────────────────────────────────────────────────────────
     if share:
+        if share_format not in ("twitter", "plain"):
+            console.print(
+                f"[red]Unknown --format '{share_format}'.[/red]  "
+                "Valid values: [bold]twitter[/bold], [bold]plain[/bold]."
+            )
+            raise typer.Exit(1)
+
         rec_email_count = sum(
             (domain_map_lookup.get(rec.sender.domain) or rec.sender).count
             for rec in recommendations
         )
-        viral = generate_viral_share_text(
-            freed_mb=total_reclaimable,
+        # Top 3 safe/review domains by impact score — no personal data
+        top_domains = [
+            rec.sender.domain
+            for rec in recommendations
+            if classify_sender_risk(rec.sender) != "sensitive"
+        ][:3]
+
+        share_text = generate_stats_share_text(
+            reclaimable_mb_val=total_reclaimable,
             sender_count=len(recommendations),
             email_count=rec_email_count,
-            reclaim_pct=reclaim_pct,
-            elapsed_seconds=scan_elapsed,
+            top_domains=top_domains,
+            scan_seconds=scan_elapsed,
+            fmt=share_format,
         )
+
         console.print()
+        # Colored terminal preview
         console.print(
             Panel(
-                viral,
-                title="[bold green]Share mailtrim",
+                share_text,
+                title="[bold green]Share mailtrim[/bold green]"
+                + (" [dim](twitter)[/dim]" if share_format == "twitter" else " [dim](plain)[/dim]"),
                 border_style="green",
                 padding=(0, 2),
             )
         )
+        # Copy-ready block — raw text, no markup
+        console.print("[dim]── copy-ready ──────────────────────────────────[/dim]")
+        console.print(share_text)
+        console.print("[dim]───────────────────────────────────────────────[/dim]")
         console.print(
-            "[dim]  Copy the text above — paste it to Twitter, Slack, or a team chat.[/dim]\n"
+            f"\n[dim]{len(share_text)} chars"
+            + (" · fits Twitter/X" if len(share_text) <= 280 else " · over 280 chars")
+            + "[/dim]\n"
         )
         return
 

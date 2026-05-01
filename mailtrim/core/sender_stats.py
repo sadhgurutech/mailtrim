@@ -503,6 +503,68 @@ def generate_share_text(
     )
 
 
+# ── Stats share text ─────────────────────────────────────────────────────────
+
+_REPO_URL = "https://github.com/sadhgurutech/mailtrim"
+
+
+def generate_stats_share_text(
+    reclaimable_mb_val: float,
+    sender_count: int,
+    email_count: int,
+    top_domains: list[str],
+    scan_seconds: int,
+    fmt: str = "twitter",
+) -> str:
+    """
+    Share text for ``mailtrim stats --share`` — describes what *could* be cleaned,
+    not what has been cleaned (that's generate_share_text / generate_viral_share_text).
+
+    ``fmt`` is "twitter" (emoji, ≤280 chars) or "plain" (no emoji, plain ASCII).
+
+    No personal data: no email addresses, no account name.
+    Top domains are the category-level source names (linkedin.com, github.com…).
+    """
+    sender_word = "sender" if sender_count == 1 else "senders"
+    email_str = f"{email_count:,}"
+    mb_str = f"{reclaimable_mb_val} MB" if reclaimable_mb_val > 0 else ""
+    size_part = f" · {mb_str}" if mb_str else ""
+    speed_part = f" — scanned in {scan_seconds}s" if scan_seconds > 0 else ""
+
+    # Top 3 domains only; drop empty strings
+    top = [d for d in top_domains[:3] if d]
+    sources_line = f"Top sources: {', '.join(top)}" if top else ""
+
+    if fmt == "plain":
+        first_line = (
+            f"Found {email_str} emails to clean from {sender_count} {sender_word}"
+            f"{size_part}{speed_part}"
+        )
+        parts = [first_line]
+        if sources_line:
+            parts.append(sources_line)
+        parts.append(_REPO_URL)
+        return "\n".join(parts)
+
+    # twitter format — emoji, punchy, ≤280 chars
+    first_line = (
+        f"🧹 {email_str} emails to clean · {sender_count} {sender_word}{size_part}{speed_part}"
+    )
+    cta = f"Free & open-source → {_REPO_URL}"
+    parts = [first_line]
+    if sources_line:
+        parts.append(sources_line)
+    parts.append(cta)
+    text = "\n".join(parts)
+
+    # Safety truncation: trim sources line if over 280 (rare but possible)
+    if len(text) > 280:
+        parts_no_sources = [first_line, cta]
+        text = "\n".join(parts_no_sources)
+
+    return text
+
+
 # ── Headline insight ─────────────────────────────────────────────────────────
 
 
