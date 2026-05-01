@@ -118,7 +118,12 @@ def _is_first_stats_run() -> bool:
 
 def _handle_error(exc: Exception, verbose: bool = False) -> None:
     """Translate an exception to a friendly message and exit."""
+    from mailtrim.core.ai.mode import AIModeError
     from mailtrim.core.errors import friendly_error
+
+    if isinstance(exc, AIModeError):
+        console.print(f"\n[yellow]AI blocked:[/yellow] {exc}")
+        raise typer.Exit(1)
 
     human_msg, fix_hint = friendly_error(exc)
     console.print(f"\n[red]Error:[/red] {human_msg}")
@@ -731,6 +736,9 @@ def stats(
     # Optional local-AI enrichment — always runs on all top recommendations.
     ai_insights: dict[str, dict] = {}
     if use_ai and recommendations:
+        from mailtrim.core.ai.mode import require_local
+
+        require_local(get_settings().ai_mode)
         from mailtrim.core.llm import (
             analyze_batch,
             confidence_delta,
@@ -782,10 +790,20 @@ def stats(
                 )
             ai_insights[rec.sender.sender_email] = result
 
-        if ai_insights:
+        if any(ai_insights.values()):
             from mailtrim.core.llm import apply_impact_nudge
 
             apply_impact_nudge(groups, ai_insights)
+        else:
+            _expected = ai_url or (
+                "http://localhost:11434" if ai_backend == "ollama" else "http://localhost:8080"
+            )
+            console.print(
+                f"\n[yellow]⚠ Local AI unavailable[/yellow] — results shown without AI enrichment.\n"
+                f"  Is [bold]{'Ollama' if ai_backend == 'ollama' else 'llama.cpp'}[/bold] running?"
+                f" Expected at {_expected}\n"
+                "  [dim]Results are still accurate — AI only adjusts confidence scores.[/dim]\n"
+            )
 
     if recommendations:
         from mailtrim.core.llm import format_ai_line  # always available
@@ -1113,6 +1131,9 @@ def triage(
     ),
 ):
     """AI-powered inbox triage with explanations for every decision."""
+    from mailtrim.core.ai.mode import require_cloud
+
+    require_cloud(get_settings().ai_mode)
     from mailtrim.core.avoidance import AvoidanceDetector
 
     client = _get_client()
@@ -1245,8 +1266,10 @@ def bulk(
       mailtrim bulk "delete all emails from noreply@* older than 1 year"
       mailtrim bulk "label as 'receipts' everything from order confirmation senders"
     """
+    from mailtrim.core.ai.mode import require_cloud
     from mailtrim.core.bulk_engine import BulkEngine
 
+    require_cloud(get_settings().ai_mode)
     client = _get_client()
     account_email = _get_account_email(client)
     engine = BulkEngine(client, account_email, _get_ai())
@@ -1489,8 +1512,10 @@ def avoid(
     [EXPERIMENTAL] Show emails you've been putting off — viewed multiple times but never acted on.
     AI explains why you might be avoiding them and suggests one action.
     """
+    from mailtrim.core.ai.mode import require_cloud
     from mailtrim.core.avoidance import AvoidanceDetector
 
+    require_cloud(get_settings().ai_mode)
     client = _get_client()
     account_email = _get_account_email(client)
     detector = AvoidanceDetector(client, account_email, _get_ai())
@@ -1706,6 +1731,9 @@ def rules(
 @app.command()
 def digest():
     """[EXPERIMENTAL] Generate your weekly inbox digest — insights, action items, and one cleanup suggestion."""
+    from mailtrim.core.ai.mode import require_cloud
+
+    require_cloud(get_settings().ai_mode)
     from collections import Counter
 
     from mailtrim.core.avoidance import AvoidanceDetector
@@ -2151,6 +2179,9 @@ def purge(
     # Optional local-AI enrichment — only for senders where AI adds signal.
     purge_ai_insights: dict[str, dict] = {}
     if use_ai:
+        from mailtrim.core.ai.mode import require_local
+
+        require_local(get_settings().ai_mode)
         from mailtrim.core.llm import (
             analyze_batch,
             confidence_delta,
@@ -2173,10 +2204,19 @@ def purge(
                 ai_results = analyze_batch(texts, cache_keys=keys, ai_client=_purge_ai_client)
             purge_ai_insights = {g.sender_email: r for g, r in zip(eligible_groups, ai_results)}
 
-        if purge_ai_insights:
+        if any(purge_ai_insights.values()):
             from mailtrim.core.llm import apply_impact_nudge
 
             apply_impact_nudge(groups, purge_ai_insights)
+        elif eligible_groups:
+            _expected = ai_url or (
+                "http://localhost:11434" if ai_backend == "ollama" else "http://localhost:8080"
+            )
+            console.print(
+                f"\n[yellow]⚠ Local AI unavailable[/yellow] — confidence scores not adjusted.\n"
+                f"  Is [bold]{'Ollama' if ai_backend == 'ollama' else 'llama.cpp'}[/bold] running?"
+                f" Expected at {_expected}\n"
+            )
 
     console.print()
     table = Table(
@@ -2535,6 +2575,71 @@ def doctor(
 
 
 # ── version ───────────────────────────────────────────────────────────────────
+
+
+@app.command(name="config")
+def config_cmd(
+    key: str = typer.Argument(..., help="Config key to set. Currently supported: ai-mode"),
+    value: str = typer.Argument(..., help="Value to set. For ai-mode: off | local | cloud"),
+):
+    """
+    Set a persistent configuration value.
+
+    Examples:
+      mailtrim config ai-mode off     # disable all AI (default, privacy-safe)
+      mailtrim config ai-mode local   # allow local AI only (Ollama, llama.cpp)
+      mailtrim config ai-mode cloud   # allow Anthropic cloud AI
+    """
+    if key != "ai-mode":
+        console.print(f"[red]Unknown config key '[bold]{key}[/bold]'.[/red]")
+        console.print("  Supported keys: ai-mode")
+        raise typer.Exit(1)
+
+    from mailtrim.core.ai.mode import validate_mode
+
+    try:
+        validate_mode(value)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+
+    # Persist to ~/.mailtrim/.env which Settings already reads.
+    env_path = DATA_DIR / ".env"
+    lines = env_path.read_text().splitlines() if env_path.exists() else []
+    key_line = f"MAILTRIM_AI_MODE={value}"
+    updated = [line for line in lines if not line.startswith("MAILTRIM_AI_MODE=")]
+    updated.append(key_line)
+    env_path.write_text("\n".join(updated) + "\n")
+
+    if value == "cloud":
+        console.print(
+            Panel(
+                "[green]ai_mode set to [bold]cloud[/bold][/green]\n\n"
+                "[yellow]Warning:[/yellow] Cloud AI sends email subjects and snippets\n"
+                "to Anthropic's servers. See anthropic.com/privacy for details.\n\n"
+                "Requires [bold]ANTHROPIC_API_KEY[/bold] to be set.",
+                border_style="yellow",
+            )
+        )
+    elif value == "local":
+        console.print(
+            Panel(
+                "[green]ai_mode set to [bold]local[/bold][/green]\n\n"
+                "Local AI runs entirely on your machine — nothing leaves it.\n"
+                "Requires Ollama or llama.cpp to be running.\n\n"
+                "Try:  mailtrim stats --ai",
+                border_style="green",
+            )
+        )
+    else:
+        console.print(
+            Panel(
+                "[green]ai_mode set to [bold]off[/bold][/green]\n\n"
+                "All AI features are disabled. Core commands (stats, purge, undo)\n"
+                "work fully without AI.",
+                border_style="dim",
+            )
+        )
 
 
 @app.command()
