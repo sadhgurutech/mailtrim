@@ -2643,6 +2643,96 @@ def config_cmd(
 
 
 @app.command()
+def privacy():
+    """Show what data mailtrim stores and whether any leaves your machine."""
+    from mailtrim.config import (
+        CREDENTIALS_PATH,
+        DATA_DIR,
+        DB_PATH,
+        TOKEN_PATH,
+        UNDO_LOG_DIR,
+    )
+    from mailtrim.core.usage_stats import get_stats
+
+    settings = get_settings()
+    ai_mode = settings.ai_mode
+
+    # ── AI mode line ──────────────────────────────────────────────────────────
+    if ai_mode == "off":
+        ai_label = "[green]OFF[/green]"
+        ai_note = "No email data leaves your machine."
+        ai_color = "green"
+    elif ai_mode == "local":
+        ai_label = "[cyan]LOCAL[/cyan]"
+        ai_note = "Processed locally — nothing sent externally."
+        ai_color = "cyan"
+    else:  # cloud
+        ai_label = "[yellow]CLOUD[/yellow]"
+        ai_note = "May send email subjects and snippets to Anthropic."
+        ai_color = "yellow"
+
+    # ── Usage stats ───────────────────────────────────────────────────────────
+    stats = get_stats()
+    usage_enabled = (DATA_DIR / "usage.json").exists()
+    runs = stats.get("total_runs", 0)
+    trashed = stats.get("emails_trashed", 0)
+
+    console.print()
+    console.print(
+        Panel.fit(
+            "[bold]mailtrim privacy report[/bold]",
+            border_style="cyan",
+        )
+    )
+
+    console.print()
+    console.print("[bold]What is stored locally[/bold]")
+    console.print()
+
+    rows = [
+        ("OAuth token", TOKEN_PATH, "Lets mailtrim access Gmail. Never shared."),
+        ("OAuth credentials", CREDENTIALS_PATH, "Your Google Cloud app credentials. Never shared."),
+        ("Email database", DB_PATH, "Local cache of metadata (no email body stored)."),
+        ("Undo logs", UNDO_LOG_DIR, "History of cleanup operations for undo."),
+        ("Usage stats", DATA_DIR / "usage.json", "Local run counts. Never uploaded."),
+        ("Config / env", DATA_DIR / ".env", "Your settings (API keys, ai_mode, etc.)."),
+    ]
+
+    for label, path, note in rows:
+        exists = "[green]exists[/green]" if Path(path).exists() else "[dim]not created yet[/dim]"
+        console.print(f"  [bold]{label:<20}[/bold]  {exists}")
+        console.print(f"  [dim]  {path}[/dim]")
+        console.print(f"  [dim]  {note}[/dim]")
+        console.print()
+
+    console.print("[bold]AI mode[/bold]")
+    console.print()
+    console.print(f"  Current mode:  {ai_label}")
+    console.print(f"  [{ai_color}]{ai_note}[/{ai_color}]")
+    console.print()
+    console.print("  Change with:  [cyan]mailtrim config ai-mode [off|local|cloud][/cyan]")
+
+    console.print()
+    console.print("[bold]Usage stats (local only)[/bold]")
+    console.print()
+    if usage_enabled:
+        console.print(f"  [green]Enabled[/green] — stored in {DATA_DIR / 'usage.json'}")
+        console.print(f"  {runs:,} total runs · {trashed:,} emails trashed")
+        console.print("  [dim]Never uploaded. Delete the file to reset.[/dim]")
+    else:
+        console.print("  [dim]Not yet created (runs after first command).[/dim]")
+
+    console.print()
+    console.print("[bold]What never happens[/bold]")
+    console.print()
+    console.print("  [green]✓[/green]  No telemetry or analytics")
+    console.print("  [green]✓[/green]  No email body content ever stored or sent")
+    console.print("  [green]✓[/green]  No account data shared with mailtrim project")
+    console.print("  [green]✓[/green]  OAuth token stored locally at chmod 600")
+    console.print()
+
+
+@app.command()
 def version():
     """Print version."""
     console.print(f"mailtrim {__version__}")
