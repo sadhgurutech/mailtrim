@@ -146,6 +146,266 @@ def _record(command: str) -> None:
         pass
 
 
+# ── setup ────────────────────────────────────────────────────────────────────
+
+
+@app.command()
+def setup():
+    """
+    Interactive first-time setup — connect your account and run your first inbox scan.
+
+    Guides you through provider selection, authentication, health checks, and
+    surfaces your first safe cleanup in ~1–2 minutes.
+    """
+    _record("setup")
+
+    from mailtrim.core.diagnostics import run_all
+    from mailtrim.core.sender_stats import (
+        best_next_step,
+        classify_sender_risk,
+        compute_confidence_score,
+        fetch_sender_groups,
+        generate_recommendations,
+        group_by_domain,
+        reclaimable_mb,
+    )
+
+    # ── Welcome ───────────────────────────────────────────────────────────────
+    console.print()
+    console.print(
+        Panel.fit(
+            "[bold cyan]Welcome to mailtrim[/bold cyan]  ·  This takes [bold]~1–2 minutes[/bold].\n"
+            "[dim]Nothing is deleted without your explicit command.[/dim]",
+            border_style="cyan",
+        )
+    )
+    console.print()
+
+    # ── Step 1: Provider selection ────────────────────────────────────────────
+    console.print("[bold]Step 1 of 3[/bold]  ·  Choose your email provider")
+    console.print()
+    console.print("  [bold]G[/bold]  Gmail via OAuth  [dim](recommended — opens browser)[/dim]")
+    console.print("  [bold]I[/bold]  IMAP  [dim](Outlook, Yahoo, custom server)[/dim]")
+    console.print()
+
+    provider_choice = Prompt.ask(
+        "  Provider", choices=["G", "g", "I", "i"], default="G", show_choices=False
+    ).upper()
+    console.print()
+
+    # ── Step 2: Authentication ────────────────────────────────────────────────
+    console.print("[bold]Step 2 of 3[/bold]  ·  Connect your account")
+    console.print()
+
+    _client = None  # set on success; used for the quickstart scan
+
+    if provider_choice == "G":
+        # Gmail OAuth path
+        if not CREDENTIALS_PATH.exists():
+            console.print(
+                "  [yellow]⚠  credentials.json not found[/yellow] at "
+                f"[dim]{CREDENTIALS_PATH}[/dim]\n"
+            )
+            console.print("  To get it:")
+            console.print("    1. Go to [cyan]https://console.cloud.google.com[/cyan]")
+            console.print("    2. Create a project  →  Enable the Gmail API")
+            console.print("    3. Create OAuth 2.0 credentials  (Desktop app type)")
+            console.print(f"    4. Download and save as [cyan]{CREDENTIALS_PATH}[/cyan]")
+            console.print()
+            console.print("  [dim]Then re-run:[/dim]  [bold cyan]mailtrim setup[/bold cyan]")
+            console.print()
+            raise typer.Exit(1)
+
+        console.print("  [dim]Opening browser for Google OAuth consent…[/dim]")
+        try:
+            from mailtrim.core.gmail_client import GmailClient, authenticate
+
+            creds = authenticate(credentials_path=CREDENTIALS_PATH)
+            _client = GmailClient(creds)
+            email = _client.get_email_address()
+            console.print(f"  [green]✓[/green]  Authenticated as [bold]{email}[/bold]")
+        except Exception as exc:
+            console.print(f"  [red]✗  Authentication failed:[/red] {str(exc)[:100]}")
+            console.print()
+            console.print(
+                "  Check that your credentials.json is valid, then retry:\n"
+                "  [cyan]mailtrim auth[/cyan]  →  [cyan]mailtrim setup[/cyan]"
+            )
+            console.print()
+            raise typer.Exit(1)
+
+    else:
+        # IMAP path
+        console.print("  You'll need: server hostname, username, and password.")
+        console.print()
+        imap_server = Prompt.ask("  IMAP server", default="imap.gmail.com")
+        imap_user = Prompt.ask("  Username / email")
+        imap_password = Prompt.ask("  Password", password=True)
+        imap_port_str = Prompt.ask("  Port", default="993")
+        try:
+            imap_port = int(imap_port_str)
+        except ValueError:
+            imap_port = 993
+
+        console.print()
+        console.print("  [dim]Testing IMAP connection…[/dim]")
+        try:
+            from mailtrim.core.providers.factory import get_provider
+
+            _client = get_provider(
+                provider="imap",
+                imap_server=imap_server,
+                imap_user=imap_user,
+                imap_password=imap_password,
+                imap_port=imap_port,
+            )
+            _client.get_profile()  # verifies connectivity
+            console.print(
+                f"  [green]✓[/green]  Connected to [bold]{imap_server}[/bold] as [bold]{imap_user}[/bold]"
+            )
+        except Exception as exc:
+            console.print(f"  [red]✗  IMAP connection failed:[/red] {str(exc)[:100]}")
+            console.print()
+            console.print(
+                "  Double-check your server, username, and password, then retry:\n"
+                "  [cyan]mailtrim setup[/cyan]"
+            )
+            console.print()
+            raise typer.Exit(1)
+
+    console.print()
+
+    # ── Step 3: Health check (inline doctor — required checks only) ────────────
+    console.print("[bold]Step 3 of 3[/bold]  ·  System check")
+    console.print()
+
+    # For IMAP setups skip Gmail-specific checks (token/connection checks need OAuth)
+    if provider_choice == "I":
+        from mailtrim.core.diagnostics import (
+            check_config,
+            check_data_dir,
+            check_dependencies,
+            check_undo_storage,
+        )
+
+        check_fns = [check_dependencies, check_config, check_data_dir, check_undo_storage]
+        results = []
+        for fn in check_fns:
+            try:
+                results.append(fn())
+            except Exception as exc:
+                from mailtrim.core.diagnostics import CheckResult
+
+                results.append(CheckResult(fn.__name__, ok=False, message=str(exc)))
+    else:
+        results = run_all(include_optional=False)
+
+    failed = []
+    for r in results:
+        icon = "[green]✓[/green]" if r.ok else "[red]✗[/red]"
+        console.print(f"  {icon}  {r.name}")
+        if not r.ok:
+            console.print(f"     [dim]{r.message}[/dim]")
+            if r.fix:
+                console.print(f"     [cyan]→ {r.fix}[/cyan]")
+            failed.append(r)
+
+    console.print()
+
+    if failed:
+        console.print(
+            f"  [red]{len(failed)} check(s) failed.[/red]  Fix the issues above, then re-run:"
+        )
+        console.print("  [cyan]mailtrim setup[/cyan]")
+        console.print()
+        raise typer.Exit(1)
+
+    console.print("  [green]All checks passed.[/green]  Scanning your inbox…")
+    console.print()
+
+    # ── Quickstart scan (inline — reuses same logic as quickstart command) ─────
+    try:
+        groups = fetch_sender_groups(
+            _client,
+            query="in:inbox",
+            max_messages=500,
+            min_count=2,
+            top_n=50,
+            sort_by="score",
+        )
+        domain_groups = group_by_domain(groups)
+        domain_map_lookup = {d.domain: d for d in domain_groups}
+        recommendations = generate_recommendations(groups, top_n=10, domain_map=domain_map_lookup)
+        bns = best_next_step(recommendations)
+        total_reclaimable = reclaimable_mb(recommendations)
+    except Exception as exc:
+        console.print(f"  [yellow]⚠  Scan failed:[/yellow] {str(exc)[:80]}")
+        console.print(
+            "\n  You're still set up correctly — try manually:\n  [cyan]mailtrim quickstart[/cyan]"
+        )
+        console.print()
+        return  # not a fatal error — auth + doctor passed
+
+    total_emails = sum(g.count for g in groups)
+    safe_count = len(
+        [
+            r
+            for r in recommendations
+            if classify_sender_risk(r.sender) != "sensitive"
+            and compute_confidence_score(r.sender) >= 50
+        ]
+    )
+
+    console.print(
+        f"  Scanned [bold]{total_emails:,}[/bold] emails  ·  "
+        f"[bold]{safe_count}[/bold] safe senders to clean"
+        + (
+            f"  ·  [green]~{total_reclaimable} MB[/green] reclaimable"
+            if total_reclaimable > 0
+            else ""
+        )
+    )
+
+    if (
+        bns
+        and bns.actions
+        and classify_sender_risk(bns.sender) != "sensitive"
+        and compute_confidence_score(bns.sender) >= 50
+    ):
+        g = bns.sender
+        action = bns.actions[0]
+        d = domain_map_lookup.get(g.domain)
+        email_count = d.count if d else g.count
+        size_mb = (d.total_size_mb if d else g.total_size_mb) if action.savings_mb > 0 else 0
+        size_str = f"  ·  {size_mb} MB" if size_mb > 0 else ""
+        console.print()
+        console.print(
+            f"  [bold]Best first action[/bold]  "
+            f"[dim]{g.display_name[:45]} — {email_count:,} emails{size_str}[/dim]"
+        )
+        console.print(f"    [bold cyan]{action.command}[/bold cyan]")
+    elif not recommendations:
+        console.print("  [green]Inbox looks clean![/green]  Nothing obvious to remove right now.")
+
+    console.print()
+    console.print("  [dim]Undo anytime:[/dim]  mailtrim undo")
+
+    # ── Done ──────────────────────────────────────────────────────────────────
+    console.print()
+    console.print(
+        Panel(
+            "[green]You're all set![/green]\n\n"
+            "  [cyan]mailtrim quickstart[/cyan]   — guided first cleanup\n"
+            "  [cyan]mailtrim stats[/cyan]         — full inbox analysis\n"
+            "  [cyan]mailtrim doctor[/cyan]        — re-run health checks anytime",
+            title="[bold green]Setup complete",
+            border_style="green",
+            padding=(0, 2),
+        )
+    )
+    console.print()
+
+
 # ── auth ─────────────────────────────────────────────────────────────────────
 
 
