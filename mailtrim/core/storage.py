@@ -17,7 +17,6 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 import mailtrim.config as _cfg
-from mailtrim.config import get_settings
 
 # ── Base ─────────────────────────────────────────────────────────────────────
 
@@ -251,7 +250,7 @@ class EmailRepo:
 
     def find_avoided(self, account_email: str, threshold: int | None = None) -> list[EmailRecord]:
         """Emails viewed >= threshold times but not acted on."""
-        t = threshold or get_settings().avoidance_view_threshold
+        t = threshold or _cfg.get_settings().avoidance_view_threshold
         return (
             self.s.query(EmailRecord)
             .filter(
@@ -336,7 +335,7 @@ class UndoLogRepo:
     ) -> UndoLogEntry:
         from datetime import timedelta
 
-        settings = get_settings()
+        settings = _cfg.get_settings()
         entry = UndoLogEntry(
             account_email=account_email,
             operation=operation,
