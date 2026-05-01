@@ -11,6 +11,27 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.3.0] — 2026-05-01
+
+### Added
+- `mailtrim setup` — guided first-time onboarding: provider selection (Gmail/IMAP),
+  auth, health checks, and first inbox scan in ~2 minutes
+- `mailtrim stats --since <Nd>` and `mailtrim purge --since <Nd>` — time-based filtering;
+  translates to `newer_than:Nd` for Gmail and `SINCE` criteria for IMAP
+- `mailtrim stats --share` — shareable summary output in Twitter (≤280 chars) or plain format;
+  no personal data, top domains only
+- **AI trust boundary system** — `ai_status_line()` helper; AI state badge (`AI: OFF / LOCAL / CLOUD`)
+  visible in `stats`, `quickstart`, and `doctor`; `_cloud_ai_warning()` panel shown before any
+  cloud AI command; `require_cloud()` wrapped in try/except in all four AI commands for clean exits
+
+### Changed
+- `quickstart` redesigned for instant value: ≤10 lines of output, safe candidates, undo hint,
+  best first action surfaced immediately
+- README rewritten for v0.3.0: trust-first framing, 35% shorter, structured for GitHub visitors
+- `AIModeError` now renders multi-line messages in `_handle_error` (first line bold, rest dim)
+
+---
+
 ## [0.2.1] — 2026-04-11
 
 ### Added
