@@ -119,6 +119,7 @@ class TestStatsBadge:
         with (
             patch("mailtrim.cli.main._get_provider", return_value=mock_client),
             patch("mailtrim.core.sender_stats.fetch_sender_groups", return_value=[]),
+            patch("mailtrim.cli.main._record"),
             patch(
                 "mailtrim.cli.main.get_settings",
                 return_value=MagicMock(ai_mode=mode),
@@ -167,7 +168,7 @@ class TestQuickstartBadge:
         }
 
         with (
-            patch("mailtrim.cli.main._get_provider", return_value=mock_client),
+            patch("mailtrim.cli.main._get_client", return_value=mock_client),
             patch("mailtrim.core.sender_stats.fetch_sender_groups", return_value=[]),
             patch(
                 "mailtrim.cli.main.get_settings",

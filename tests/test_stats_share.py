@@ -54,6 +54,7 @@ def _invoke(*args: str, groups=None):
     with (
         patch("mailtrim.cli.main._get_provider", return_value=mock_client),
         patch("mailtrim.core.sender_stats.fetch_sender_groups", return_value=groups),
+        patch("mailtrim.cli.main._record"),
     ):
         return runner.invoke(app, ["stats", *args], catch_exceptions=False)
 
