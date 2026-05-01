@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
 runner = CliRunner()
@@ -232,6 +233,10 @@ class TestDoctorBadge:
 
 
 class TestCloudWarning:
+    @pytest.fixture(autouse=True)
+    def _use_clean_db(self, clean_db):
+        """Provide an in-memory DB so bulk/avoid/digest don't fail on missing DB dir."""
+
     def _invoke_with_cloud_mode(self, command: list[str]):
         """
         Stub out the command's heavy work but let require_cloud + _cloud_ai_warning run.
