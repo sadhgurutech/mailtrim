@@ -62,3 +62,18 @@ def require_cloud(mode: str) -> None:
             "To allow external calls:  mailtrim config ai-mode cloud\n"
             "Warning: cloud mode sends email subjects and snippets to Anthropic."
         )
+
+
+def ai_status_line(mode: str) -> tuple[str, str, str]:
+    """Return (label, note, color) for displaying AI mode in CLI output.
+
+    Usage::
+
+        label, note, color = ai_status_line(get_settings().ai_mode)
+        console.print(f"  [{color}]AI: {label}[/{color}]  [dim]{note}[/dim]")
+    """
+    if mode == "local":
+        return ("LOCAL", "runs on your machine — nothing sent externally", "cyan")
+    if mode == "cloud":
+        return ("CLOUD", "email data may be sent to Anthropic", "yellow")
+    return ("OFF", "no data leaves your machine", "green")

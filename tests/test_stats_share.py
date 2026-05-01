@@ -54,6 +54,7 @@ def _invoke(*args: str, groups=None):
     with (
         patch("mailtrim.cli.main._get_provider", return_value=mock_client),
         patch("mailtrim.core.sender_stats.fetch_sender_groups", return_value=groups),
+        patch("mailtrim.cli.main._record"),
     ):
         return runner.invoke(app, ["stats", *args], catch_exceptions=False)
 
@@ -150,7 +151,8 @@ class TestGenerateStatsShareText:
         )
         assert "MB" not in text
 
-    def test_contains_top_domains(self):
+    def test_contains_top_domains_as_pretty_labels(self):
+        """Known domains are displayed as human-readable labels, not raw domain names."""
         from mailtrim.core.sender_stats import generate_stats_share_text
 
         text = generate_stats_share_text(
@@ -160,8 +162,12 @@ class TestGenerateStatsShareText:
             top_domains=["linkedin.com", "github.com"],
             scan_seconds=2,
         )
-        assert "linkedin.com" in text
-        assert "github.com" in text
+        assert "LinkedIn" in text
+        assert "GitHub" in text
+        # linkedin.com cannot appear in the URL — absence confirms prettification worked
+        assert "linkedin.com" not in text
+        # Sources line is present using pretty labels
+        assert "Top:" in text
 
     def test_no_personal_data(self):
         """Email addresses must never appear in share text."""
@@ -231,6 +237,132 @@ class TestGenerateStatsShareText:
         )
         assert "1 sender" in text
         assert "senders" not in text
+
+
+# ── Example output tests ─────────────────────────────────────────────────────
+
+
+class TestShareExamples:
+    """
+    Concrete end-to-end examples that pin the exact shape of share text.
+
+    These serve as specification: if you change the output format, update
+    these tests first so the intent is explicit.
+    """
+
+    def _gen(self, **kw):
+        from mailtrim.core.sender_stats import generate_stats_share_text
+
+        defaults = dict(
+            reclaimable_mb_val=0.0,
+            sender_count=1,
+            email_count=10,
+            top_domains=[],
+            scan_seconds=0,
+            fmt="twitter",
+        )
+        return generate_stats_share_text(**{**defaults, **kw})
+
+    def test_example_big_cleanup_twitter(self):
+        """Classic result: many emails, significant MB, two known sources."""
+        text = self._gen(
+            reclaimable_mb_val=87.4,
+            sender_count=3,
+            email_count=495,
+            top_domains=["linkedin.com", "github.com"],
+            scan_seconds=4,
+            fmt="twitter",
+        )
+        # Core facts present
+        assert "495" in text
+        assert "87.4 MB" in text
+        assert "3 senders" in text
+        assert "4s" in text
+        # Human-readable source labels
+        assert "LinkedIn" in text
+        assert "GitHub" in text
+        # Privacy: no raw email addresses
+        assert "@" not in text
+        # Under preferred 200-char limit when sources fit
+        assert len(text) <= 200
+        # Has emoji and URL
+        assert "🧹" in text
+        assert "github.com/sadhgurutech/mailtrim" in text
+
+    def test_example_single_sender_twitter(self):
+        """Single-sender result uses singular 'sender', not 'senders'."""
+        text = self._gen(
+            reclaimable_mb_val=26.1,
+            sender_count=1,
+            email_count=183,
+            top_domains=["substack.com"],
+            scan_seconds=2,
+            fmt="twitter",
+        )
+        assert "183" in text
+        assert "26.1 MB" in text
+        assert "1 sender" in text
+        assert "senders" not in text
+        assert "Substack" in text
+        assert "2s" in text
+        assert len(text) <= 280
+
+    def test_example_no_mb_no_domains_twitter(self):
+        """When there's no reclaimable storage and no known domains, output stays clean."""
+        text = self._gen(
+            reclaimable_mb_val=0,
+            sender_count=5,
+            email_count=300,
+            top_domains=[],
+            scan_seconds=6,
+            fmt="twitter",
+        )
+        assert "300" in text
+        assert "5 senders" in text
+        assert "6s" in text
+        assert "MB" not in text
+        # No sources line when top_domains is empty
+        assert "Top:" not in text
+        assert len(text) <= 280
+
+    def test_example_plain_format(self):
+        """Plain format: no emoji, sources labeled, same facts."""
+        text = self._gen(
+            reclaimable_mb_val=15.0,
+            sender_count=2,
+            email_count=200,
+            top_domains=["medium.com", "notion.so"],
+            scan_seconds=3,
+            fmt="plain",
+        )
+        assert "🧹" not in text
+        assert "200" in text
+        assert "15.0 MB" in text
+        assert "2 senders" in text
+        assert "Medium" in text
+        assert "Notion" in text
+        assert "Top sources:" in text
+        assert "3s" in text
+        assert "github.com/sadhgurutech/mailtrim" in text
+
+    def test_example_sensitive_domain_filtered(self):
+        """Sensitive domains (bank, health …) are silently excluded from share text."""
+        text = self._gen(
+            reclaimable_mb_val=20.0,
+            sender_count=3,
+            email_count=150,
+            top_domains=["bankofamerica.com", "healthinsurance.com", "linkedin.com"],
+            scan_seconds=3,
+            fmt="twitter",
+        )
+        # Sensitive domains must not appear
+        assert "bankofamerica" not in text
+        assert "healthinsurance" not in text
+        # Safe domain is shown
+        assert "LinkedIn" in text
+        # Core numbers still present
+        assert "150" in text
+        assert "3 senders" in text
 
 
 # ── CLI integration tests ─────────────────────────────────────────────────────

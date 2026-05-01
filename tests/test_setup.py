@@ -129,18 +129,22 @@ def _invoke_imap(groups=None, imap_ok=True):
 
     from mailtrim.core.diagnostics import CheckResult
 
+    ok = CheckResult("ok", ok=True, message="ok")
     check_results = [
         CheckResult("Required packages", ok=True, message="ok"),
         CheckResult("Config", ok=True, message="ok"),
         CheckResult("Data directory", ok=True, message="ok"),
         CheckResult("Undo storage", ok=True, message="ok"),
     ]
-
     imap_input = "I\nimap.example.com\nuser@example.com\nsecret\n993\n"
     with (
         patch("pathlib.Path.exists", return_value=True),
         patch("mailtrim.core.providers.factory.get_provider", return_value=mock_provider),
         patch("mailtrim.core.diagnostics.run_all", return_value=check_results),
+        patch("mailtrim.core.diagnostics.check_dependencies", return_value=ok),
+        patch("mailtrim.core.diagnostics.check_config", return_value=ok),
+        patch("mailtrim.core.diagnostics.check_data_dir", return_value=ok),
+        patch("mailtrim.core.diagnostics.check_undo_storage", return_value=ok),
         patch("mailtrim.core.sender_stats.fetch_sender_groups", return_value=groups),
     ):
         return runner.invoke(app, ["setup"], input=imap_input, catch_exceptions=False)

@@ -507,6 +507,82 @@ def generate_share_text(
 
 _REPO_URL = "https://github.com/sadhgurutech/mailtrim"
 
+# Substrings that indicate a domain carries sensitive content.
+# Domains matching any of these are silently excluded from share text.
+_SENSITIVE_DOMAIN_PATTERNS: tuple[str, ...] = (
+    "bank",
+    "paypal",
+    "venmo",
+    "zelle",
+    "financial",
+    "credit",
+    "loan",
+    "mortgage",
+    "insurance",
+    "brokerage",
+    "fidelity",
+    "vanguard",
+    "schwab",
+    "health",
+    "medical",
+    "hospital",
+    "pharmacy",
+    "prescription",
+    "clinic",
+    ".gov",
+    "irs.",
+    "legal",
+    "lawyer",
+    "attorney",
+    "court",
+    "crypto",
+    "bitcoin",
+    "wallet",
+)
+
+# Human-readable labels for well-known domains.
+# Unlisted domains fall back to their raw domain name.
+_DOMAIN_PRETTY: dict[str, str] = {
+    "linkedin.com": "LinkedIn",
+    "github.com": "GitHub",
+    "substack.com": "Substack",
+    "medium.com": "Medium",
+    "twitter.com": "Twitter",
+    "x.com": "X",
+    "facebook.com": "Facebook",
+    "instagram.com": "Instagram",
+    "youtube.com": "YouTube",
+    "google.com": "Google",
+    "amazon.com": "Amazon",
+    "netflix.com": "Netflix",
+    "slack.com": "Slack",
+    "notion.so": "Notion",
+    "shopify.com": "Shopify",
+    "hubspot.com": "HubSpot",
+    "mailchimp.com": "Mailchimp",
+    "glassdoor.com": "Glassdoor",
+    "indeed.com": "Indeed",
+    "spotify.com": "Spotify",
+    "twitch.tv": "Twitch",
+    "reddit.com": "Reddit",
+    "quora.com": "Quora",
+    "duolingo.com": "Duolingo",
+    "zoom.us": "Zoom",
+    "dropbox.com": "Dropbox",
+    "figma.com": "Figma",
+}
+
+
+def _is_sensitive_domain(domain: str) -> bool:
+    """Return True when a domain name matches any sensitive content pattern."""
+    d = domain.lower()
+    return any(pat in d for pat in _SENSITIVE_DOMAIN_PATTERNS)
+
+
+def _prettify_domain(domain: str) -> str:
+    """Return a human-readable label for a domain (e.g. 'linkedin.com' → 'LinkedIn')."""
+    return _DOMAIN_PRETTY.get(domain.lower(), domain)
+
 
 def generate_stats_share_text(
     reclaimable_mb_val: float,
@@ -517,50 +593,60 @@ def generate_stats_share_text(
     fmt: str = "twitter",
 ) -> str:
     """
-    Share text for ``mailtrim stats --share`` — describes what *could* be cleaned,
-    not what has been cleaned (that's generate_share_text / generate_viral_share_text).
+    Share text for ``mailtrim stats --share`` — describes what *could* be cleaned.
 
-    ``fmt`` is "twitter" (emoji, ≤280 chars) or "plain" (no emoji, plain ASCII).
+    Format
+    ------
+    Line 1 — the core stat: email count · MB (if > 0) · N senders · scan speed (if > 0)
+    Line 2 — top 1–2 safe sources in human-readable labels (omitted when none)
+    Line 3 — short CTA with repo URL
 
-    No personal data: no email addresses, no account name.
-    Top domains are the category-level source names (linkedin.com, github.com…).
+    Rules
+    -----
+    * ``fmt="twitter"``: leads with 🧹, targets ≤200 chars (hard cap 280).
+    * ``fmt="plain"``: no emoji, plain ASCII.
+    * Sensitive domains (bank, health, gov …) are silently excluded.
+    * No personal data — no email addresses, no account name.
+    * When total length would exceed 200 chars the sources line is dropped first.
     """
     sender_word = "sender" if sender_count == 1 else "senders"
     email_str = f"{email_count:,}"
-    mb_str = f"{reclaimable_mb_val} MB" if reclaimable_mb_val > 0 else ""
-    size_part = f" · {mb_str}" if mb_str else ""
-    speed_part = f" — scanned in {scan_seconds}s" if scan_seconds > 0 else ""
 
-    # Top 3 domains only; drop empty strings
-    top = [d for d in top_domains[:3] if d]
-    sources_line = f"Top sources: {', '.join(top)}" if top else ""
+    size_part = f" · {reclaimable_mb_val} MB" if reclaimable_mb_val > 0 else ""
+    speed_part = f". Scanned in {scan_seconds}s" if scan_seconds > 0 else ""
+
+    # Top 1-2 non-sensitive sources with human-readable labels
+    safe_labels = [_prettify_domain(d) for d in top_domains if d and not _is_sensitive_domain(d)][
+        :2
+    ]
+    sources_label = " & ".join(safe_labels) if safe_labels else ""
 
     if fmt == "plain":
-        first_line = (
-            f"Found {email_str} emails to clean from {sender_count} {sender_word}"
-            f"{size_part}{speed_part}"
-        )
-        parts = [first_line]
-        if sources_line:
-            parts.append(sources_line)
+        stat_line = f"{email_str} emails{size_part} — {sender_count} {sender_word}{speed_part}"
+        parts = [stat_line]
+        if sources_label:
+            parts.append(f"Top sources: {sources_label}")
         parts.append(_REPO_URL)
         return "\n".join(parts)
 
-    # twitter format — emoji, punchy, ≤280 chars
-    first_line = (
-        f"🧹 {email_str} emails to clean · {sender_count} {sender_word}{size_part}{speed_part}"
-    )
-    cta = f"Free & open-source → {_REPO_URL}"
-    parts = [first_line]
-    if sources_line:
-        parts.append(sources_line)
+    # twitter — emoji, punchy
+    stat_line = f"🧹 {email_str} emails{size_part} — {sender_count} {sender_word}{speed_part}"
+    cta = f"Free → {_REPO_URL}"
+
+    parts = [stat_line]
+    if sources_label:
+        parts.append(f"Top: {sources_label}")
     parts.append(cta)
     text = "\n".join(parts)
 
-    # Safety truncation: trim sources line if over 280 (rare but possible)
+    # Prefer ≤200 chars: drop sources line if needed
+    if len(text) > 200 and sources_label:
+        text = "\n".join([stat_line, cta])
+
+    # Hard cap at 280: shorten stat line as last resort
     if len(text) > 280:
-        parts_no_sources = [first_line, cta]
-        text = "\n".join(parts_no_sources)
+        stat_line = f"🧹 {email_str} emails{size_part} — {sender_count} {sender_word}"
+        text = "\n".join([stat_line, cta])
 
     return text
 

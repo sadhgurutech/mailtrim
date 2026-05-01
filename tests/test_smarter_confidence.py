@@ -4,31 +4,12 @@ from datetime import datetime, timezone
 
 import pytest
 
-# ── Fixtures ─────────────────────────────────────────────────────────────────
+# ── DB isolation ──────────────────────────────────────────────────────────────
 
 
 @pytest.fixture(autouse=True)
-def isolated_db(monkeypatch, tmp_path):
-    """Redirect all storage to a temp dir so tests never touch ~/.mailtrim."""
-    monkeypatch.setenv("MAILTRIM_DIR", str(tmp_path))
-    import mailtrim.config as cfg
-
-    cfg._settings = None
-    cfg.DATA_DIR = tmp_path
-    cfg.DB_PATH = tmp_path / "test.db"
-    cfg.UNDO_LOG_DIR = tmp_path / "undo_logs"
-
-    import mailtrim.core.storage as storage
-
-    storage._engine = None
-    storage._SessionLocal = None
-
-    yield
-
-    if storage._engine:
-        storage._engine.dispose()
-    storage._engine = None
-    storage._SessionLocal = None
+def _use_clean_db(clean_db):
+    """Apply the shared in-memory DB fixture to every test in this module."""
 
 
 def _make_group(
