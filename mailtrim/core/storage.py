@@ -16,7 +16,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
-from mailtrim.config import DB_PATH, get_settings
+import mailtrim.config as _cfg
+from mailtrim.config import get_settings
 
 # ── Base ─────────────────────────────────────────────────────────────────────
 
@@ -198,7 +199,7 @@ def get_engine():
     global _engine
     if _engine is None:
         _engine = create_engine(
-            f"sqlite:///{DB_PATH}",
+            f"sqlite:///{_cfg.DB_PATH}",
             connect_args={"check_same_thread": False},
             echo=False,
         )
