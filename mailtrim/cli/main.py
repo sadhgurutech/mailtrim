@@ -790,16 +790,19 @@ def stats(
                 )
             ai_insights[rec.sender.sender_email] = result
 
-        if ai_insights:
+        if any(ai_insights.values()):
             from mailtrim.core.llm import apply_impact_nudge
 
             apply_impact_nudge(groups, ai_insights)
         else:
+            _expected = ai_url or (
+                "http://localhost:11434" if ai_backend == "ollama" else "http://localhost:8080"
+            )
             console.print(
-                "[yellow]⚠ Local AI unavailable[/yellow] — results shown without AI enrichment.\n"
-                f"  Is {'Ollama' if ai_backend == 'ollama' else 'llama.cpp'} running? "
-                f"Expected at {ai_url or ('http://localhost:11434' if ai_backend == 'ollama' else 'http://localhost:8080')}\n"
-                "  [dim]Results are still accurate — AI only adjusts confidence scores.[/dim]"
+                f"\n[yellow]⚠ Local AI unavailable[/yellow] — results shown without AI enrichment.\n"
+                f"  Is [bold]{'Ollama' if ai_backend == 'ollama' else 'llama.cpp'}[/bold] running?"
+                f" Expected at {_expected}\n"
+                "  [dim]Results are still accurate — AI only adjusts confidence scores.[/dim]\n"
             )
 
     if recommendations:
@@ -2201,15 +2204,18 @@ def purge(
                 ai_results = analyze_batch(texts, cache_keys=keys, ai_client=_purge_ai_client)
             purge_ai_insights = {g.sender_email: r for g, r in zip(eligible_groups, ai_results)}
 
-        if purge_ai_insights:
+        if any(purge_ai_insights.values()):
             from mailtrim.core.llm import apply_impact_nudge
 
             apply_impact_nudge(groups, purge_ai_insights)
         elif eligible_groups:
+            _expected = ai_url or (
+                "http://localhost:11434" if ai_backend == "ollama" else "http://localhost:8080"
+            )
             console.print(
-                "[yellow]⚠ Local AI unavailable[/yellow] — confidence scores not adjusted.\n"
-                f"  Is {'Ollama' if ai_backend == 'ollama' else 'llama.cpp'} running? "
-                f"Expected at {ai_url or ('http://localhost:11434' if ai_backend == 'ollama' else 'http://localhost:8080')}"
+                f"\n[yellow]⚠ Local AI unavailable[/yellow] — confidence scores not adjusted.\n"
+                f"  Is [bold]{'Ollama' if ai_backend == 'ollama' else 'llama.cpp'}[/bold] running?"
+                f" Expected at {_expected}\n"
             )
 
     console.print()
