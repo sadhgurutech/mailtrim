@@ -88,3 +88,35 @@ def validate_older_than(days: int) -> int:
             f"--older-than value {days} exceeds 100 years — did you mean something else?"
         )
     return days
+
+
+# ── Since / date range ────────────────────────────────────────────────────────
+
+_SINCE_RE = re.compile(r"^(\d+)d$")
+_MAX_SINCE_DAYS = 36_500  # 100 years
+
+
+def validate_since(value: str) -> int:
+    """
+    Parse and validate a ``--since <Nd>`` argument.
+
+    Accepts: ``30d``, ``7d``, ``365d``
+    Rejects: ``30``, ``d``, ``0d``, negative values, values > 100 years.
+
+    Returns the number of days as an int on success.
+    Raises typer.BadParameter on failure.
+    """
+    m = _SINCE_RE.match(value.strip())
+    if not m:
+        raise typer.BadParameter(
+            f"'{value}' is not a valid --since value. "
+            "Use the format <N>d, e.g. --since 30d or --since 7d."
+        )
+    days = int(m.group(1))
+    if days <= 0:
+        raise typer.BadParameter(f"--since must be at least 1 day (got {days}d).")
+    if days > _MAX_SINCE_DAYS:
+        raise typer.BadParameter(
+            f"--since value {days}d exceeds 100 years — did you mean something else?"
+        )
+    return days
