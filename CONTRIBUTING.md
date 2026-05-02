@@ -62,10 +62,21 @@ python -m pytest tests/ -v
 mailtrim/
 ├── config.py          # Settings via env vars / ~/.mailtrim/.env
 ├── core/
+│   ├── ai/
+│   │   ├── client.py      # AI provider abstraction (Anthropic / local / mock)
+│   │   └── mode.py        # ai_mode enforcement: off | local | cloud
+│   ├── providers/
+│   │   ├── base.py        # EmailProvider ABC (get_profile, list_messages, …)
+│   │   ├── factory.py     # get_provider() — returns Gmail or IMAP instance
+│   │   ├── gmail.py       # Gmail provider (OAuth)
+│   │   └── imap.py        # IMAP provider (Outlook, Yahoo, custom)
 │   ├── gmail_client.py    # Gmail API: OAuth, CRUD, batching, retry
 │   ├── storage.py         # Local SQLite via SQLAlchemy
-│   ├── ai_engine.py       # Claude API integration (classification, NL→query)
+│   ├── llm.py             # Claude API integration (classification, NL→query)
 │   ├── mock_ai.py         # Drop-in AI stub for testing without an API key
+│   ├── diagnostics.py     # Health checks used by `mailtrim doctor`
+│   ├── errors.py          # Friendly error messages for common failures
+│   ├── usage_stats.py     # Local-only command run counters (never uploaded)
 │   ├── follow_up.py       # Conditional follow-up tracker
 │   ├── bulk_engine.py     # Bulk operations: preview → execute → undo
 │   ├── avoidance.py       # "Emails you're avoiding" detector
@@ -74,9 +85,18 @@ mailtrim/
 └── cli/
     └── main.py            # Typer CLI — all user-facing commands
 tests/
+    conftest.py            # Shared fixtures — clean_db (in-memory SQLite)
     test_storage.py        # SQLite layer tests
     test_purge.py          # Sender aggregation + selection parser tests
     test_mock_ai.py        # MockAIEngine tests (all AI paths, no API key needed)
+    test_ai_trust_boundary.py  # AI mode badges, cloud warning, off-mode blocking
+    test_diagnostics.py    # doctor checks and usage stats
+    test_smarter_confidence.py # Confidence scoring and sender blocklist
+    test_stats_share.py    # stats --share text generation
+    test_since_filter.py   # --since flag validation and query translation
+    test_validation.py     # Input validation helpers
+    test_privacy.py        # privacy command output
+    test_setup.py          # setup command (Gmail + IMAP paths)
 ```
 
 **Adding a new command:**
@@ -103,7 +123,7 @@ tests/
 ## Testing
 
 ```bash
-# Run all 115 tests — zero API calls, zero credentials needed
+# Run all tests — zero API calls, zero credentials needed
 python -m pytest tests/ -v
 
 # Run a specific test file
@@ -117,6 +137,14 @@ ruff check mailtrim/
 ```
 
 The test suite is designed to run **without a Gmail account or Anthropic key**. The `MockAIEngine` covers all AI paths. Use `pytest -m "not integration"` if you add integration tests requiring real credentials.
+
+**Tests that touch the database** must use the `clean_db` fixture from `tests/conftest.py`. It provides an isolated in-memory SQLite instance per test — no files written to `~/.mailtrim`. Add it as an autouse fixture at the module level:
+
+```python
+@pytest.fixture(autouse=True)
+def _use_clean_db(clean_db):
+    pass
+```
 
 ---
 
@@ -137,7 +165,8 @@ A maintainer will review within a few days. We may ask for changes before mergin
 These guide every decision in this project:
 
 1. **Privacy by default** — all state in local SQLite; nothing stored externally
-2. **Reversibility** — destructive operations have a 30-day undo window
-3. **Transparency** — every AI decision has a one-line human-readable explanation
-4. **Beginner-friendly** — works without an Anthropic key; helpful error messages
-5. **No over-engineering** — prefer simple and obvious over clever and abstract
+2. **AI trust boundary** — users always know whether data leaves the machine (`ai_mode: off | local | cloud`); no silent fallback
+3. **Reversibility** — destructive operations have a 30-day undo window
+4. **Transparency** — every AI decision has a one-line human-readable explanation
+5. **Beginner-friendly** — works without an Anthropic key; helpful error messages
+6. **No over-engineering** — prefer simple and obvious over clever and abstract
