@@ -83,8 +83,8 @@ mailtrim quickstart    # one command — scans, ranks, shows the safest first ac
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │  TOTAL RECLAIMABLE SPACE                                                    │
-│  You can safely free ~87.4 MB (34% of scanned inbox)                       │
-│  from your top 3 senders · Each cleanup takes ~3-5s                        │
+│  You can safely free ~87.4 MB (34% of scanned inbox)                        │
+│  from your top 3 senders · Each cleanup takes ~3-5s                         │
 │  All deletions go to Trash — undo anytime                                   │
 └─────────────────────────────────────────────────────────────────────────────┘
 
