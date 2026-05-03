@@ -1,13 +1,19 @@
-"""Tests for `_resolve_imap_settings` and provider isolation guarantees.
+"""Tests for `_resolve_imap_settings`, provider isolation, and provider indicator output.
 
 Key invariants:
 - Gmail mode: IMAP settings always zeroed (no stale bleed-through)
 - IMAP mode: IMAP settings resolved from CLI > persisted config
 - Fallback: empty provider setting → "gmail"
 - Provider switches (IMAP → Gmail and Gmail → IMAP) work cleanly
+- Provider indicator line is printed at the start of stats, quickstart, purge
 """
 
 from __future__ import annotations
+
+from io import StringIO
+from unittest.mock import MagicMock, patch
+
+from rich.console import Console
 
 # ── _resolve_imap_settings unit tests ─────────────────────────────────────────
 
@@ -178,3 +184,142 @@ class TestProviderSwitching:
         assert p == "imap"
         assert server == "imap.example.com"
         assert user == "user@example.com"
+
+
+# ── _print_provider_line output tests ─────────────────────────────────────────
+
+
+def _capture_provider_line(provider: str, imap_server: str = "") -> str:
+    """Call _print_provider_line and return the rendered text (markup stripped)."""
+    from mailtrim.cli.main import _print_provider_line
+
+    buf = StringIO()
+    cap = Console(file=buf, highlight=False, no_color=True)
+    with patch("mailtrim.cli.main.console", cap):
+        _print_provider_line(provider, imap_server)
+    return buf.getvalue().strip()
+
+
+class TestProviderIndicatorOutput:
+    def test_gmail_shows_provider_gmail(self):
+        out = _capture_provider_line("gmail")
+        assert "Provider: Gmail" in out
+
+    def test_gmail_no_imap_detail(self):
+        out = _capture_provider_line("gmail")
+        assert "server:" not in out
+        assert "imap" not in out.lower()
+
+    def test_imap_shows_provider_imap(self):
+        out = _capture_provider_line("imap", "imap.example.com")
+        assert "Provider: IMAP" in out
+
+    def test_imap_shows_server_name(self):
+        out = _capture_provider_line("imap", "imap.example.com")
+        assert "imap.example.com" in out
+
+    def test_imap_no_server_omits_server_detail(self):
+        out = _capture_provider_line("imap", "")
+        assert "Provider: IMAP" in out
+        assert "server:" not in out
+
+    def test_output_is_single_line(self):
+        gmail_out = _capture_provider_line("gmail")
+        imap_out = _capture_provider_line("imap", "imap.example.com")
+        assert "\n" not in gmail_out
+        assert "\n" not in imap_out
+
+
+class TestProviderIndicatorInCommands:
+    """Smoke tests: provider line appears in stats, quickstart, purge output."""
+
+    def _mock_gmail_client(self):
+        c = MagicMock()
+        c.get_profile.return_value = {
+            "emailAddress": "user@gmail.com",
+            "messagesTotal": 100,
+            "threadsTotal": 80,
+        }
+        c.get_email_address.return_value = "user@gmail.com"
+        return c
+
+    def test_stats_shows_gmail_provider_line(self, monkeypatch):
+        from typer.testing import CliRunner
+
+        from mailtrim.cli.main import app
+
+        monkeypatch.setenv("MAILTRIM_PROVIDER", "gmail")
+        import mailtrim.config as config
+
+        config._settings = None
+
+        client = self._mock_gmail_client()
+        with (
+            patch("mailtrim.cli.main._get_provider", return_value=client),
+            patch("mailtrim.core.sender_stats.fetch_sender_groups", return_value=[]),
+        ):
+            result = CliRunner().invoke(app, ["stats"], catch_exceptions=False)
+
+        assert "Provider: Gmail" in result.output
+
+    def test_stats_shows_imap_provider_line(self, monkeypatch):
+        from typer.testing import CliRunner
+
+        from mailtrim.cli.main import app
+
+        monkeypatch.setenv("MAILTRIM_PROVIDER", "imap")
+        monkeypatch.setenv("MAILTRIM_IMAP_SERVER", "imap.example.com")
+        monkeypatch.setenv("MAILTRIM_IMAP_USER", "user@example.com")
+        monkeypatch.setenv("MAILTRIM_IMAP_PASSWORD", "secret")
+        import mailtrim.config as config
+
+        config._settings = None
+
+        client = self._mock_gmail_client()
+        with (
+            patch("mailtrim.cli.main._get_provider", return_value=client),
+            patch("mailtrim.core.sender_stats.fetch_sender_groups", return_value=[]),
+        ):
+            result = CliRunner().invoke(app, ["stats"], catch_exceptions=False)
+
+        assert "Provider: IMAP" in result.output
+        assert "imap.example.com" in result.output
+
+    def test_purge_shows_gmail_provider_line(self, monkeypatch):
+        from typer.testing import CliRunner
+
+        from mailtrim.cli.main import app
+
+        monkeypatch.setenv("MAILTRIM_PROVIDER", "gmail")
+        import mailtrim.config as config
+
+        config._settings = None
+
+        client = self._mock_gmail_client()
+        with (
+            patch("mailtrim.cli.main._get_provider", return_value=client),
+            patch("mailtrim.cli.main._get_account_email", return_value="user@gmail.com"),
+            patch("mailtrim.core.sender_stats.fetch_sender_groups", return_value=[]),
+        ):
+            result = CliRunner().invoke(app, ["purge"], input="q\n", catch_exceptions=False)
+
+        assert "Provider: Gmail" in result.output
+
+    def test_quickstart_shows_gmail_provider_line(self, monkeypatch):
+        from typer.testing import CliRunner
+
+        from mailtrim.cli.main import app
+
+        monkeypatch.setenv("MAILTRIM_PROVIDER", "gmail")
+        import mailtrim.config as config
+
+        config._settings = None
+
+        client = self._mock_gmail_client()
+        with (
+            patch("mailtrim.cli.main._get_provider", return_value=client),
+            patch("mailtrim.core.sender_stats.fetch_sender_groups", return_value=[]),
+        ):
+            result = CliRunner().invoke(app, ["quickstart"], catch_exceptions=False)
+
+        assert "Provider: Gmail" in result.output

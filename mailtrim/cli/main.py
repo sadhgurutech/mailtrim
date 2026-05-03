@@ -236,6 +236,15 @@ def _resolve_imap_settings(
     return resolved_provider, resolved_server, resolved_user, resolved_port, resolved_folder
 
 
+def _print_provider_line(provider: str, imap_server: str = "") -> None:
+    """Print a one-line provider indicator at the start of a command."""
+    if provider == "imap":
+        server_hint = f" [dim](server: {imap_server})[/dim]" if imap_server else ""
+        console.print(f"[dim]Provider: IMAP{server_hint}[/dim]")
+    else:
+        console.print("[dim]Provider: Gmail[/dim]")
+
+
 # ── setup ────────────────────────────────────────────────────────────────────
 
 
@@ -728,6 +737,7 @@ def stats(
     provider, imap_server, imap_user, imap_port, imap_folder = _resolve_imap_settings(
         provider, imap_server, imap_user, imap_port, imap_folder
     )
+    _print_provider_line(provider, imap_server)
 
     # Resolve IMAP password: env var → interactive prompt (never CLI flag)
     import os as _os
@@ -1426,6 +1436,7 @@ def quickstart(
     provider, imap_server, imap_user, imap_port, imap_folder = _resolve_imap_settings(
         provider, imap_server, imap_user, imap_port, imap_folder
     )
+    _print_provider_line(provider, imap_server)
 
     # Step 1: Check auth / connectivity
     console.print()
@@ -2665,6 +2676,7 @@ def purge(
     provider, imap_server, imap_user, imap_port, imap_folder = _resolve_imap_settings(
         provider, imap_server, imap_user, imap_port, imap_folder
     )
+    _print_provider_line(provider, imap_server)
 
     # Resolve IMAP password: env var → interactive prompt (never CLI flag)
     imap_password = _os.environ.get("MAILTRIM_IMAP_PASSWORD", "")
