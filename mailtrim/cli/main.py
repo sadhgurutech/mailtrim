@@ -203,8 +203,10 @@ def _resolve_imap_settings(
     """
     Merge CLI flag values with persisted settings from ~/.mailtrim/.env.
 
-    CLI values take precedence when they differ from the hardcoded defaults.
-    Falls back to persisted settings so commands work with zero flags after setup.
+    Priority: CLI flag > persisted config (.env) > fallback to "gmail".
+
+    When the resolved provider is "gmail", all IMAP-specific values are zeroed
+    so they can never trigger an IMAP password prompt or connection attempt.
 
     Returns (provider, imap_server, imap_user, imap_port, imap_folder).
     """
@@ -213,7 +215,15 @@ def _resolve_imap_settings(
     except Exception:
         s = None
 
-    resolved_provider = provider or (s.provider if s else "gmail")
+    # Three-tier fallback: CLI flag → persisted config → default "gmail"
+    resolved_provider = provider or (s.provider if s else "") or "gmail"
+
+    # IMAP-specific settings are only meaningful when the resolved provider is IMAP.
+    # Zeroing them out for Gmail prevents stale IMAP config from a previous setup
+    # from bleeding through (e.g. prompting for an IMAP password in Gmail mode).
+    if resolved_provider != "imap":
+        return resolved_provider, "", "", 993, "INBOX"
+
     resolved_server = imap_server or (s.imap_server if s else "")
     resolved_user = imap_user or (s.imap_user if s else "")
     # For port/folder, treat CLI defaults (993/"INBOX") as "not specified" so
@@ -224,6 +234,15 @@ def _resolve_imap_settings(
     )
 
     return resolved_provider, resolved_server, resolved_user, resolved_port, resolved_folder
+
+
+def _print_provider_line(provider: str, imap_server: str = "") -> None:
+    """Print a one-line provider indicator at the start of a command."""
+    if provider == "imap":
+        server_hint = f" [dim](server: {imap_server})[/dim]" if imap_server else ""
+        console.print(f"[dim]Provider: IMAP{server_hint}[/dim]")
+    else:
+        console.print("[dim]Provider: Gmail[/dim]")
 
 
 # ── setup ────────────────────────────────────────────────────────────────────
@@ -322,8 +341,12 @@ def setup():
                 ]
                 _env_lines.append("MAILTRIM_PROVIDER=gmail")
                 _env_path.write_text("\n".join(_env_lines) + "\n")
-            except OSError:
-                pass
+            except OSError as exc:
+                console.print(
+                    f"  [yellow]⚠  Could not persist provider settings to .env: {exc}[/yellow]\n"
+                    "  Setup will continue — run [bold]mailtrim setup[/bold] again if "
+                    "commands later prompt for an IMAP password."
+                )
         except Exception as exc:
             console.print(f"  [red]✗  Authentication failed:[/red] {str(exc)[:100]}")
             console.print()
@@ -389,8 +412,12 @@ def setup():
                     ]
                 )
                 _env_path.write_text("\n".join(_env_lines) + "\n")
-            except OSError:
-                pass  # non-fatal — commands still accept explicit flags
+            except OSError as exc:
+                console.print(
+                    f"  [yellow]⚠  Could not persist IMAP settings to .env: {exc}[/yellow]\n"
+                    "  Setup will continue — pass [bold]--imap-server[/bold] and "
+                    "[bold]--imap-user[/bold] explicitly if needed."
+                )
         except Exception as exc:
             console.print(f"  [red]✗  IMAP connection failed:[/red] {str(exc)[:100]}")
             console.print()
@@ -718,6 +745,7 @@ def stats(
     provider, imap_server, imap_user, imap_port, imap_folder = _resolve_imap_settings(
         provider, imap_server, imap_user, imap_port, imap_folder
     )
+    _print_provider_line(provider, imap_server)
 
     # Resolve IMAP password: env var → interactive prompt (never CLI flag)
     import os as _os
@@ -1416,6 +1444,7 @@ def quickstart(
     provider, imap_server, imap_user, imap_port, imap_folder = _resolve_imap_settings(
         provider, imap_server, imap_user, imap_port, imap_folder
     )
+    _print_provider_line(provider, imap_server)
 
     # Step 1: Check auth / connectivity
     console.print()
@@ -2655,6 +2684,7 @@ def purge(
     provider, imap_server, imap_user, imap_port, imap_folder = _resolve_imap_settings(
         provider, imap_server, imap_user, imap_port, imap_folder
     )
+    _print_provider_line(provider, imap_server)
 
     # Resolve IMAP password: env var → interactive prompt (never CLI flag)
     imap_password = _os.environ.get("MAILTRIM_IMAP_PASSWORD", "")
