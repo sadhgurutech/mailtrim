@@ -341,8 +341,12 @@ def setup():
                 ]
                 _env_lines.append("MAILTRIM_PROVIDER=gmail")
                 _env_path.write_text("\n".join(_env_lines) + "\n")
-            except OSError:
-                pass
+            except OSError as exc:
+                console.print(
+                    f"  [yellow]⚠  Could not persist provider settings to .env: {exc}[/yellow]\n"
+                    "  Setup will continue — run [bold]mailtrim setup[/bold] again if "
+                    "commands later prompt for an IMAP password."
+                )
         except Exception as exc:
             console.print(f"  [red]✗  Authentication failed:[/red] {str(exc)[:100]}")
             console.print()
@@ -408,8 +412,12 @@ def setup():
                     ]
                 )
                 _env_path.write_text("\n".join(_env_lines) + "\n")
-            except OSError:
-                pass  # non-fatal — commands still accept explicit flags
+            except OSError as exc:
+                console.print(
+                    f"  [yellow]⚠  Could not persist IMAP settings to .env: {exc}[/yellow]\n"
+                    "  Setup will continue — pass [bold]--imap-server[/bold] and "
+                    "[bold]--imap-user[/bold] explicitly if needed."
+                )
         except Exception as exc:
             console.print(f"  [red]✗  IMAP connection failed:[/red] {str(exc)[:100]}")
             console.print()
