@@ -304,6 +304,26 @@ def setup():
             _client = GmailClient(creds)
             email = _client.get_email_address()
             console.print(f"  [green]✓[/green]  Authenticated as [bold]{email}[/bold]")
+            # Persist Gmail as the active provider, clearing any stale IMAP settings.
+            # Without this a previous IMAP setup would leave MAILTRIM_IMAP_USER in
+            # .env and every subsequent command would prompt for an IMAP password.
+            _env_path = DATA_DIR / ".env"
+            try:
+                _env_lines = _env_path.read_text().splitlines() if _env_path.exists() else []
+                _imap_prefixes = {
+                    "MAILTRIM_PROVIDER=",
+                    "MAILTRIM_IMAP_SERVER=",
+                    "MAILTRIM_IMAP_USER=",
+                    "MAILTRIM_IMAP_PORT=",
+                    "MAILTRIM_IMAP_FOLDER=",
+                }
+                _env_lines = [
+                    ln for ln in _env_lines if not any(ln.startswith(p) for p in _imap_prefixes)
+                ]
+                _env_lines.append("MAILTRIM_PROVIDER=gmail")
+                _env_path.write_text("\n".join(_env_lines) + "\n")
+            except OSError:
+                pass
         except Exception as exc:
             console.print(f"  [red]✗  Authentication failed:[/red] {str(exc)[:100]}")
             console.print()
