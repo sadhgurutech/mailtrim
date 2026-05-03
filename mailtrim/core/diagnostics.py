@@ -175,6 +175,106 @@ def check_config() -> CheckResult:
         )
 
 
+def check_imap_connection(
+    server: str,
+    user: str,
+    password: str,
+    port: int = 993,
+) -> CheckResult:
+    """Verify that the IMAP server is reachable and accepts credentials."""
+    if not server or not user or not password:
+        return CheckResult(
+            "IMAP connection",
+            ok=False,
+            message="Missing --imap-server, --imap-user, or password",
+            fix="Provide --imap-server, --imap-user, and set MAILTRIM_IMAP_PASSWORD",
+        )
+    try:
+        from mailtrim.core.providers.imap import IMAPProvider
+
+        provider = IMAPProvider(server=server, user=user, password=password, port=port)
+        profile = provider.get_profile()
+        email = profile.get("emailAddress", user)
+        total = profile.get("messagesTotal", "?")
+        provider.close()
+        return CheckResult(
+            "IMAP connection",
+            ok=True,
+            message=f"Connected as {email}  ·  {total} messages in INBOX",
+        )
+    except ConnectionError as exc:
+        return CheckResult(
+            "IMAP connection",
+            ok=False,
+            message=f"Login failed: {str(exc)[:80]}",
+            fix="Check server hostname, username, and app password",
+        )
+    except Exception as exc:
+        return CheckResult(
+            "IMAP connection",
+            ok=False,
+            message=f"Connection error: {str(exc)[:80]}",
+            fix=f"Verify {server}:{port} is reachable and TLS is enabled",
+        )
+
+
+def check_imap_trash_folder(server: str, user: str, password: str, port: int = 993) -> CheckResult:
+    """Verify that a recognisable Trash folder exists (needed for undo)."""
+    try:
+        from mailtrim.core.providers.imap import _TRASH_FOLDERS, IMAPProvider
+
+        provider = IMAPProvider(server=server, user=user, password=password, port=port)
+        trash = provider._get_trash_folder()
+        provider.close()
+        if trash:
+            return CheckResult(
+                "IMAP Trash folder",
+                ok=True,
+                message=f"Trash folder found: {trash}",
+            )
+        return CheckResult(
+            "IMAP Trash folder",
+            ok=False,
+            message=f"No Trash folder found (checked SPECIAL-USE \\Trash and: {', '.join(_TRASH_FOLDERS)})",
+            fix="Undo will not work; create a Trash folder on the server",
+            optional=True,
+        )
+    except Exception as exc:
+        return CheckResult(
+            "IMAP Trash folder",
+            ok=False,
+            message=f"Could not check Trash: {str(exc)[:80]}",
+            optional=True,
+        )
+
+
+def run_imap_checks(server: str, user: str, password: str, port: int = 993) -> list[CheckResult]:
+    """Run the IMAP-specific health checks and return results."""
+    import functools
+
+    results: list[CheckResult] = []
+    for fn in [
+        check_dependencies,
+        check_config,
+        check_data_dir,
+        check_undo_storage,
+        functools.partial(check_imap_connection, server, user, password, port),
+        functools.partial(check_imap_trash_folder, server, user, password, port),
+    ]:
+        try:
+            results.append(fn())
+        except Exception as exc:
+            results.append(
+                CheckResult(
+                    "check",
+                    ok=False,
+                    message=f"Check crashed: {exc}",
+                    fix="Please report this at github.com/sadhgurutech/mailtrim/issues",
+                )
+            )
+    return results
+
+
 def check_ai_endpoint(url: str = "http://localhost:8080") -> CheckResult:
     import urllib.request
 

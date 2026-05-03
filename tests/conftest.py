@@ -27,6 +27,30 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 
+@pytest.fixture(autouse=True)
+def _reset_settings(monkeypatch):
+    """
+    Prevent tests from reading the real ~/.mailtrim/.env.
+
+    pydantic-settings gives env vars higher priority than .env file values,
+    so setting MAILTRIM_PROVIDER=gmail here ensures tests always start with
+    the default (Gmail) configuration regardless of what's persisted locally.
+    Resets the settings cache before and after each test.
+    """
+    import mailtrim.config as config
+
+    config._settings = None
+    # Set explicit values (not just delete) so pydantic-settings env var precedence
+    # wins over any values in the user's real ~/.mailtrim/.env file.
+    monkeypatch.setenv("MAILTRIM_PROVIDER", "gmail")
+    monkeypatch.setenv("MAILTRIM_IMAP_SERVER", "")
+    monkeypatch.setenv("MAILTRIM_IMAP_USER", "")
+    monkeypatch.setenv("MAILTRIM_IMAP_PORT", "993")
+    monkeypatch.setenv("MAILTRIM_IMAP_FOLDER", "INBOX")
+    yield
+    config._settings = None
+
+
 @pytest.fixture()
 def clean_db(monkeypatch):
     """Inject a fresh in-memory SQLite engine into the storage module.

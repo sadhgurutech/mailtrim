@@ -165,6 +165,67 @@ def _record(command: str) -> None:
         pass
 
 
+def _require_gmail(command_name: str) -> None:
+    """
+    Exit with a clear message if the user configured an IMAP provider during setup.
+
+    IMAP users would otherwise hit the Gmail OAuth flow unexpectedly.
+    This guard fires only when the persisted provider is "imap" — Gmail users
+    are never affected.
+    """
+    try:
+        if get_settings().provider == "imap":
+            console.print(
+                f"\n[yellow]'{command_name}' currently requires Gmail.[/yellow]\n"
+                "  This command uses Gmail-specific features (labels, OAuth) "
+                "not yet available over IMAP.\n\n"
+                "  Available for all providers:\n"
+                "    [cyan]mailtrim stats[/cyan]   — inbox analysis\n"
+                "    [cyan]mailtrim purge[/cyan]   — clean by sender or domain\n"
+                "    [cyan]mailtrim undo[/cyan]    — reverse a purge\n\n"
+                "  [dim]IMAP support for this command is planned. "
+                "Follow progress at github.com/sadhgurutech/mailtrim[/dim]"
+            )
+            raise typer.Exit(1)
+    except typer.Exit:
+        raise
+    except Exception:
+        pass  # settings unreadable — let the command proceed and fail naturally
+
+
+def _resolve_imap_settings(
+    provider: str = "",
+    imap_server: str = "",
+    imap_user: str = "",
+    imap_port: int = 993,
+    imap_folder: str = "INBOX",
+) -> tuple[str, str, str, int, str]:
+    """
+    Merge CLI flag values with persisted settings from ~/.mailtrim/.env.
+
+    CLI values take precedence when they differ from the hardcoded defaults.
+    Falls back to persisted settings so commands work with zero flags after setup.
+
+    Returns (provider, imap_server, imap_user, imap_port, imap_folder).
+    """
+    try:
+        s = get_settings()
+    except Exception:
+        s = None
+
+    resolved_provider = provider or (s.provider if s else "gmail")
+    resolved_server = imap_server or (s.imap_server if s else "")
+    resolved_user = imap_user or (s.imap_user if s else "")
+    # For port/folder, treat CLI defaults (993/"INBOX") as "not specified" so
+    # settings values configured during setup take precedence.
+    resolved_port = imap_port if (imap_port != 993 or not s or not s.imap_port) else s.imap_port
+    resolved_folder = (
+        imap_folder if (imap_folder != "INBOX" or not s or not s.imap_folder) else s.imap_folder
+    )
+
+    return resolved_provider, resolved_server, resolved_user, resolved_port, resolved_folder
+
+
 # ── setup ────────────────────────────────────────────────────────────────────
 
 
@@ -282,6 +343,34 @@ def setup():
             console.print(
                 f"  [green]✓[/green]  Connected to [bold]{imap_server}[/bold] as [bold]{imap_user}[/bold]"
             )
+            # Persist all IMAP settings so future commands work with zero flags
+            _env_path = DATA_DIR / ".env"
+            try:
+                _env_lines = _env_path.read_text().splitlines() if _env_path.exists() else []
+                _prefixes_to_remove = {
+                    "MAILTRIM_PROVIDER=",
+                    "MAILTRIM_IMAP_SERVER=",
+                    "MAILTRIM_IMAP_USER=",
+                    "MAILTRIM_IMAP_PORT=",
+                    "MAILTRIM_IMAP_FOLDER=",
+                }
+                _env_lines = [
+                    ln
+                    for ln in _env_lines
+                    if not any(ln.startswith(p) for p in _prefixes_to_remove)
+                ]
+                _env_lines.extend(
+                    [
+                        "MAILTRIM_PROVIDER=imap",
+                        f"MAILTRIM_IMAP_SERVER={imap_server}",
+                        f"MAILTRIM_IMAP_USER={imap_user}",
+                        f"MAILTRIM_IMAP_PORT={imap_port}",
+                        "MAILTRIM_IMAP_FOLDER=INBOX",
+                    ]
+                )
+                _env_path.write_text("\n".join(_env_lines) + "\n")
+            except OSError:
+                pass  # non-fatal — commands still accept explicit flags
         except Exception as exc:
             console.print(f"  [red]✗  IMAP connection failed:[/red] {str(exc)[:100]}")
             console.print()
@@ -516,9 +605,9 @@ def stats(
         hidden=True,
     ),
     provider: str = typer.Option(
-        "gmail",
+        "",
         "--provider",
-        help="Email provider: gmail (default) or imap.",
+        help="Email provider: gmail or imap. Defaults to configured provider.",
     ),
     imap_server: str = typer.Option("", "--imap-server", help="IMAP server hostname."),
     imap_user: str = typer.Option("", "--imap-user", help="IMAP login username."),
@@ -549,7 +638,7 @@ def stats(
     Inbox decision engine — reclaimable space, confidence-scored recommendations, top senders.
 
     Tells you exactly what to move to Trash, why it's safe, and how long it will take.
-    No AI required. All deletions go to Trash — recoverable for 30 days.
+    No AI required. Works with Gmail and IMAP. All deletions go to Trash — recoverable for 30 days.
 
     Examples:
       mailtrim stats
@@ -557,8 +646,7 @@ def stats(
       mailtrim stats --scope anywhere   # include archived and sent mail
       mailtrim stats --max-scan 5000    # scan more of a large mailbox
       mailtrim stats --since 30d        # only emails from the last 30 days
-      mailtrim stats --share              # twitter-style summary (≤280 chars)
-      mailtrim stats --share --format plain  # plain-text version
+      mailtrim stats --share            # twitter-style summary (≤280 chars)
     """
     _record("stats")
     import json as json_lib
@@ -605,6 +693,11 @@ def stats(
         scope_label += f" · last {since_days}d"
 
     scan_start = _time.time()
+
+    # Resolve provider + IMAP settings (CLI flags override persisted settings)
+    provider, imap_server, imap_user, imap_port, imap_folder = _resolve_imap_settings(
+        provider, imap_server, imap_user, imap_port, imap_folder
+    )
 
     # Resolve IMAP password: env var → interactive prompt (never CLI flag)
     import os as _os
@@ -1263,16 +1356,32 @@ def stats(
 
 
 @app.command()
-def quickstart():
+def quickstart(
+    provider: str = typer.Option(
+        "", "--provider", help="Email provider: gmail or imap. Defaults to configured provider."
+    ),
+    imap_server: str = typer.Option("", "--imap-server", help="IMAP server hostname."),
+    imap_user: str = typer.Option("", "--imap-user", help="IMAP login username."),
+    imap_port: int = typer.Option(993, "--imap-port", help="IMAP SSL port (default 993)."),
+    imap_folder: str = typer.Option(
+        "INBOX", "--imap-folder", help="IMAP folder to scan (default INBOX)."
+    ),
+):
     """
     Guided first cleanup — checks auth, scans inbox, and suggests your first safe action.
 
     Perfect for first-time users. Run this before anything else.
+    Works with Gmail and IMAP (Outlook, Yahoo, custom servers).
     All cleanups go to Trash — undo anytime with: mailtrim undo
 
-    Examples:
+    After running `mailtrim setup`, no flags are needed:
       mailtrim quickstart
+
+    First-time IMAP setup (then no flags required afterwards):
+      mailtrim quickstart --provider imap --imap-server imap.example.com --imap-user you@example.com
     """
+    import os as _os
+
     from mailtrim.core.sender_stats import (
         best_next_step,
         classify_sender_risk,
@@ -1283,14 +1392,39 @@ def quickstart():
         reclaimable_mb,
     )
 
-    # Step 1: Check auth
+    # Resolve provider + IMAP settings (CLI flags override persisted settings)
+    provider, imap_server, imap_user, imap_port, imap_folder = _resolve_imap_settings(
+        provider, imap_server, imap_user, imap_port, imap_folder
+    )
+
+    # Step 1: Check auth / connectivity
     console.print()
+    imap_password = ""
+    if provider == "imap":
+        imap_password = _os.environ.get("MAILTRIM_IMAP_PASSWORD", "")
+        if imap_user and not imap_password:
+            imap_password = typer.prompt(
+                f"IMAP password for {imap_user}", hide_input=True, default=""
+            )
     try:
-        client = _get_client()
+        client = _get_provider(
+            provider=provider,
+            imap_server=imap_server,
+            imap_user=imap_user,
+            imap_password=imap_password,
+            imap_port=imap_port,
+            imap_folder=imap_folder,
+        )
         account_email = _get_account_email(client)
         console.print(f"[green]✓[/green] Connected as [bold]{account_email}[/bold]")
     except Exception:
-        console.print("[red]✗ Not authenticated.[/red]  Run [cyan]mailtrim auth[/cyan] first.")
+        if provider == "imap":
+            console.print(
+                "[red]✗ IMAP connection failed.[/red]  "
+                "Re-run [cyan]mailtrim setup[/cyan] to reconfigure."
+            )
+        else:
+            console.print("[red]✗ Not authenticated.[/red]  Run [cyan]mailtrim auth[/cyan] first.")
         raise typer.Exit(1)
 
     # Step 2: Scan — fetch up to 500 messages from inbox
@@ -1399,6 +1533,7 @@ def sync(
       mailtrim sync --query "in:inbox is:unread"
       mailtrim sync --scope anywhere
     """
+    _require_gmail("sync")
     from mailtrim.core.storage import EmailRecord, EmailRepo, get_session
 
     if scope == "anywhere" and query == "in:inbox":
@@ -1480,6 +1615,7 @@ def triage(
       mailtrim triage --limit 50
       mailtrim triage --no-actions
     """
+    _require_gmail("triage")
     from mailtrim.core.ai.mode import require_cloud
 
     try:
@@ -1623,6 +1759,7 @@ def bulk(
       mailtrim bulk "label as 'receipts' everything from order confirmation senders"
       mailtrim bulk "archive LinkedIn notifications" --dry-run   # preview first
     """
+    _require_gmail("bulk")
     from mailtrim.core.ai.mode import require_cloud
     from mailtrim.core.bulk_engine import BulkEngine
 
@@ -1692,27 +1829,58 @@ def undo(
         None, help="Undo log ID. Omit to see recent operations."
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt."),
+    provider: str = typer.Option(
+        "", "--provider", help="Email provider: gmail or imap. Defaults to configured provider."
+    ),
+    imap_server: str = typer.Option("", "--imap-server", help="IMAP server hostname."),
+    imap_user: str = typer.Option("", "--imap-user", help="IMAP login username."),
+    imap_port: int = typer.Option(993, "--imap-port", help="IMAP SSL port (default 993)."),
+    imap_folder: str = typer.Option("INBOX", "--imap-folder", help="IMAP folder (default INBOX)."),
 ):
     """
     Undo a bulk operation within the 30-day window.
 
-    Restores emails from Trash back to their original location.
-    Each operation is identified by an ID shown at deletion time.
+    Restores emails from Trash back to Inbox. Works with Gmail and IMAP providers.
+    After `mailtrim setup`, the correct provider is used automatically.
 
     Examples:
       mailtrim undo          # list all undoable operations
       mailtrim undo 3        # restore operation #3
       mailtrim undo 3 --yes  # restore without prompting
     """
-    from mailtrim.core.bulk_engine import BulkEngine
+    import os as _os
+
     from mailtrim.core.storage import UndoLogRepo, get_session
 
-    client = _get_client()
-    account_email = _get_account_email(client)
-    engine = BulkEngine(client, account_email)
+    # Resolve provider + IMAP settings (CLI flags override persisted settings)
+    provider, imap_server, imap_user, imap_port, imap_folder = _resolve_imap_settings(
+        provider, imap_server, imap_user, imap_port, imap_folder
+    )
+
+    # Resolve credentials and account identity
+    _gmail_client = None
+    imap_password = ""
+
+    if provider == "imap":
+        if not imap_user:
+            console.print("[red]--imap-user is required for provider=imap.[/red]")
+            raise typer.Exit(1)
+        imap_password = _os.environ.get("MAILTRIM_IMAP_PASSWORD", "")
+        if not imap_password:
+            imap_password = typer.prompt(
+                f"IMAP password for {imap_user}", hide_input=True, default=""
+            )
+        account_email = imap_user
+    else:
+        try:
+            _gmail_client = _get_client()
+            account_email = _get_account_email(_gmail_client)
+        except Exception:
+            console.print("[red]✗ Not authenticated.[/red]  Run [cyan]mailtrim auth[/cyan] first.")
+            raise typer.Exit(1)
 
     if log_id is None:
-        # Show recent undo log
+        # Show recent undo log — no connection to mail server needed
         repo = UndoLogRepo(get_session())
         entries = repo.list_recent(account_email)
         if not entries:
@@ -1757,10 +1925,55 @@ def undo(
             console.print("[dim]Cancelled.[/dim]")
             return
 
-    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as prog:
-        t = prog.add_task("Restoring emails…", total=None)
-        count = engine.undo(log_id)
-        prog.update(t, description="Done.")
+    count = 0
+    if provider == "imap":
+        # IMAP undo: only "trash" operations are supported
+        if entry.operation != "trash":
+            console.print(
+                f"[yellow]Undo for '{entry.operation}' is not supported for IMAP providers.[/yellow]\n"
+                "  Only purge (trash) operations can be undone via IMAP."
+            )
+            raise typer.Exit(1)
+        _imap_provider = _get_provider(
+            provider="imap",
+            imap_server=imap_server,
+            imap_user=imap_user,
+            imap_password=imap_password,
+            imap_port=imap_port,
+            imap_folder=imap_folder,
+        )
+        with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as prog:
+            t = prog.add_task("Restoring emails…", total=None)
+            count = _imap_provider.batch_untrash(entry.message_ids)
+            prog.update(t, description="Done.")
+        UndoLogRepo(get_session()).mark_undone(log_id)
+        total = len(entry.message_ids)
+        skipped = total - count
+        if count == total:
+            console.print(f"[green]✓ Restored {count} email(s).[/green]")
+        elif count > 0:
+            console.print(
+                f"[yellow]⚠ Partial restore:[/yellow] "
+                f"[green]{count}[/green] restored · "
+                f"[yellow]{skipped}[/yellow] skipped\n"
+                "[dim]IMAP UIDs are folder-specific — they may change after a MOVE.\n"
+                "Check your Trash folder manually and drag any remaining emails back to Inbox.[/dim]"
+            )
+        else:
+            console.print(
+                "[red]✗ Restore failed[/red] — no emails could be moved from Trash.\n"
+                "[dim]IMAP UIDs may have changed. Open your mail client and move emails from Trash manually.[/dim]"
+            )
+    else:
+        # Gmail: use BulkEngine (handles archive, label, mark_read undo too)
+        from mailtrim.core.bulk_engine import BulkEngine
+
+        engine = BulkEngine(_gmail_client, account_email)
+        with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as prog:
+            t = prog.add_task("Restoring emails…", total=None)
+            count = engine.undo(log_id)
+            prog.update(t, description="Done.")
+        console.print(f"[green]✓ Restored {count} email(s).[/green]")
 
     try:
         from mailtrim.core.usage_stats import record_undo
@@ -1768,8 +1981,6 @@ def undo(
         record_undo(restored=count)
     except Exception:
         pass
-
-    console.print(f"[green]✓ Restored {count} emails.[/green]")
 
     # Offer to protect the senders so this doesn't happen again
     senders = entry.op_metadata.get("senders", [])
@@ -1809,6 +2020,7 @@ def follow_up(
       mailtrim follow-up --list
       mailtrim follow-up --sync
     """
+    _require_gmail("follow-up")
     from mailtrim.core.follow_up import FollowUpTracker
 
     client = _get_client()
@@ -1899,6 +2111,7 @@ def avoid(
       mailtrim avoid --process <id> --action archive
       mailtrim avoid --process <id> --action trash  # move to Trash
     """
+    _require_gmail("avoid")
     from mailtrim.core.ai.mode import require_cloud
     from mailtrim.core.avoidance import AvoidanceDetector
 
@@ -1985,6 +2198,7 @@ def unsubscribe(
       mailtrim unsubscribe --from-query "label:newsletters" --dry-run   # preview first
       mailtrim unsubscribe --history
     """
+    _require_gmail("unsubscribe")
     from mailtrim.core.unsubscribe import UnsubscribeEngine
 
     client = _get_client()
@@ -2079,6 +2293,7 @@ def rules(
       mailtrim rules --run
       mailtrim rules --list
     """
+    _require_gmail("rules")
     from mailtrim.core.bulk_engine import BulkEngine
     from mailtrim.core.storage import RuleRepo, get_session
 
@@ -2168,6 +2383,7 @@ def digest():
     Examples:
       mailtrim digest
     """
+    _require_gmail("digest")
     from mailtrim.core.ai.mode import require_cloud
 
     try:
@@ -2241,6 +2457,7 @@ def _print_cleanup_complete(
     permanent: bool,
     undo_id: "int | None",
     share: bool,
+    is_gmail: bool = True,
 ) -> None:
     """
     Print a celebratory completion panel after any purge operation,
@@ -2266,12 +2483,15 @@ def _print_cleanup_complete(
             if undo_id is not None
             else "\n  [cyan]mailtrim undo[/cyan] — see recent operations"
         )
+        gmail_note = (
+            "\n[dim]Gmail Trash shows threads, not messages — visible count there will be lower.[/dim]"
+            if is_gmail
+            else ""
+        )
         body = (
             f"[green]✓ Moved {email_count:,} emails to Trash[/green]  ·  "
             f"freed [bold green]~{freed_mb} MB[/bold green]  ·  took [bold]{elapsed_seconds}s[/bold]\n"
-            f"Senders: [dim]{names_str}[/dim]\n"
-            f"[dim]Gmail Trash shows threads, not messages — visible count there will be lower.[/dim]"
-            + undo_line
+            f"Senders: [dim]{names_str}[/dim]" + gmail_note + undo_line
         )
         border = "green"
         title = "🎉  Cleanup Complete"
@@ -2352,7 +2572,9 @@ def purge(
         "--ai",
         help="[EXPERIMENTAL] Enrich confidence scores with local AI (requires llama.cpp at localhost:8080).",
     ),
-    provider: str = typer.Option("gmail", "--provider", help="Email provider: gmail or imap."),
+    provider: str = typer.Option(
+        "", "--provider", help="Email provider: gmail or imap. Defaults to configured provider."
+    ),
     imap_server: str = typer.Option("", "--imap-server", help="IMAP server hostname."),
     imap_user: str = typer.Option("", "--imap-user", help="IMAP login username."),
     imap_port: int = typer.Option(993, "--imap-port", help="IMAP SSL port (default 993)."),
@@ -2376,19 +2598,16 @@ def purge(
     Move top email senders to Trash — with a 30-day undo window.
 
     Scans your promotions/newsletters, ranks senders, lets you pick which
-    ones to move to Trash. All deletions are recoverable for 30 days.
+    ones to move to Trash. Works with Gmail and IMAP providers.
+    All deletions are recoverable for 30 days with: mailtrim undo
 
     Examples:
       mailtrim purge
-      mailtrim purge --scope anywhere            # scan all mail, not just inbox
       mailtrim purge --domain linkedin.com --yes
       mailtrim purge --domain linkedin.com --keep 10
       mailtrim purge --domain linkedin.com --older-than 90
-      mailtrim purge --domain linkedin.com --since 30d   # only last 30 days
-      mailtrim purge --since 7d                          # emails from last 7 days
-      mailtrim purge --domain linkedin.com --yes --share
-      mailtrim purge --query "category:promotions" --top 20
-      mailtrim purge --unsub   # also unsubscribe while deleting
+      mailtrim purge --scope anywhere            # scan all mail, not just inbox
+      mailtrim purge --since 30d                 # only emails from the last 30 days
     """
     _record("purge")
     import os as _os
@@ -2411,6 +2630,11 @@ def purge(
             )
         )
         raise typer.Exit(1)
+
+    # Resolve provider + IMAP settings (CLI flags override persisted settings)
+    provider, imap_server, imap_user, imap_port, imap_folder = _resolve_imap_settings(
+        provider, imap_server, imap_user, imap_port, imap_folder
+    )
 
     # Resolve IMAP password: env var → interactive prompt (never CLI flag)
     imap_password = _os.environ.get("MAILTRIM_IMAP_PASSWORD", "")
@@ -2626,6 +2850,19 @@ def purge(
                 ) if not permanent else client.batch_delete_permanent(g.message_ids)
                 pr.advance(t2)
         elapsed = round(_time.monotonic() - _t0)
+
+        domain_undo_id: int | None = None
+        if not permanent:
+            _undo_repo = UndoLogRepo(get_session())
+            _undo_entry = _undo_repo.record(
+                account_email=account_email,
+                operation="trash",
+                message_ids=all_ids,
+                description=f"Purge domain: {domain}",
+                metadata={"senders": [g.sender_email for g in selected]},
+            )
+            domain_undo_id = _undo_entry.id
+
         _print_cleanup_complete(
             console=console,
             freed_mb=sel_mb,
@@ -2633,8 +2870,9 @@ def purge(
             sender_names=[domain],
             elapsed_seconds=elapsed,
             permanent=permanent,
-            undo_id=None,
+            undo_id=domain_undo_id,
             share=share,
+            is_gmail=(provider == "gmail"),
         )
         return
 
@@ -2869,6 +3107,7 @@ def purge(
         permanent=permanent,
         undo_id=undo_id,
         share=share,
+        is_gmail=(provider == "gmail"),
     )
 
     # ── Step 6: optional unsubscribe ─────────────────────────────────────────
@@ -2961,30 +3200,59 @@ def protect(
 def doctor(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show full error details."),
     ai: bool = typer.Option(False, "--ai", help="Also check local AI endpoint."),
+    provider: str = typer.Option(
+        "",
+        "--provider",
+        help="Email provider to check: gmail or imap. Defaults to configured provider.",
+    ),
+    imap_server: str = typer.Option("", "--imap-server", help="IMAP server hostname."),
+    imap_user: str = typer.Option("", "--imap-user", help="IMAP login username."),
+    imap_port: int = typer.Option(993, "--imap-port", help="IMAP SSL port (default 993)."),
 ):
     """
     Check that mailtrim is configured correctly and ready to use.
 
-    Verifies auth, Gmail connection, storage, and optional AI endpoint.
-    Run this first if something isn't working.
+    Verifies auth, connection, storage, and optional AI endpoint.
+    Uses the persisted provider from setup — no flags required after first run.
 
     Examples:
       mailtrim doctor
-      mailtrim doctor --ai   # also check local AI endpoint
+      mailtrim doctor --ai        # also check local AI endpoint
+      mailtrim doctor --provider imap   # force IMAP checks (reads persisted server/user)
     """
-    from mailtrim.core.diagnostics import run_all
+    import os as _os
+
+    from mailtrim.core.diagnostics import run_all, run_imap_checks
+
+    # Resolve provider + IMAP settings (CLI flags override persisted settings)
+    provider, imap_server, imap_user, imap_port, _ = _resolve_imap_settings(
+        provider, imap_server, imap_user, imap_port
+    )
 
     console.print()
     console.print(
         Panel.fit(
             f"[bold cyan]mailtrim doctor[/bold cyan]  [dim]v{__version__}[/dim]\n"
-            "[dim]Running system checks…[/dim]",
+            f"[dim]Running system checks… (provider: {provider})[/dim]",
             border_style="cyan",
         )
     )
     console.print()
 
-    results = run_all(include_optional=ai)
+    if provider == "imap":
+        imap_password = _os.environ.get("MAILTRIM_IMAP_PASSWORD", "")
+        if imap_user and not imap_password:
+            imap_password = typer.prompt(
+                f"IMAP password for {imap_user}", hide_input=True, default=""
+            )
+        results = run_imap_checks(
+            server=imap_server,
+            user=imap_user,
+            password=imap_password,
+            port=imap_port,
+        )
+    else:
+        results = run_all(include_optional=ai)
 
     required_ok = 0
     required_fail = 0

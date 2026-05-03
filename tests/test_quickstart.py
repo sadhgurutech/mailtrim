@@ -51,7 +51,7 @@ def _invoke(auth_ok: bool = True, groups: list | None = None):
         groups = [_make_sender()]
 
     with (
-        patch("mailtrim.cli.main._get_client", return_value=mock_client),
+        patch("mailtrim.cli.main._get_provider", return_value=mock_client),
         patch(
             "mailtrim.cli.main._get_account_email",
             side_effect=Exception("no auth") if not auth_ok else lambda _: "user@gmail.com",

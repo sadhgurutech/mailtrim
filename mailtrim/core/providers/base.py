@@ -68,6 +68,29 @@ class EmailProvider(ABC):
     ) -> int:
         """Add/remove labels. Label semantics are provider-specific."""
 
+    @abstractmethod
+    def batch_untrash(self, ids: list[str]) -> int:
+        """
+        Move messages from Trash back to the inbox/default folder.
+
+        Returns count of messages successfully restored.
+        Note: IMAP UIDs are folder-specific; restore is best-effort on
+        non-Gmail IMAP servers. Gmail IMAP preserves UIDs across folders.
+        """
+
+    # ── Capabilities ──────────────────────────────────────────────────────────
+
+    def supports(self, capability: str) -> bool:
+        """
+        Return True if this provider supports the named capability.
+
+        Known capabilities: 'labels', 'threads', 'unsubscribe', 'rules', 'untrash'
+
+        Callers should check before invoking Gmail-specific features so that
+        unsupported commands can show a clear message rather than crash.
+        """
+        return False
+
     # ── Account ───────────────────────────────────────────────────────────────
 
     @abstractmethod

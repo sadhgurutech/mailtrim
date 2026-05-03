@@ -11,6 +11,44 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.4.0] — 2026-05-03
+
+### Added
+- **IMAP provider persistence** — `mailtrim setup` now writes all IMAP connection settings
+  (`MAILTRIM_PROVIDER`, `MAILTRIM_IMAP_SERVER`, `MAILTRIM_IMAP_USER`, `MAILTRIM_IMAP_PORT`,
+  `MAILTRIM_IMAP_FOLDER`) to `~/.mailtrim/.env`; every subsequent command reads these
+  automatically — no flags required after first-time setup
+- `_resolve_imap_settings()` helper in CLI — merges CLI flags with persisted settings;
+  CLI values always win, persisted values fill in any gaps
+- **IMAP Trash folder detection via SPECIAL-USE** (RFC 6154) — `_get_trash_folder()` method
+  checks the `\Trash` attribute in the IMAP `LIST` response before falling back to well-known
+  names (`Trash`, `Deleted Items`, `Deleted Messages`); detected folder is cached per connection
+- **Undo result breakdown** — IMAP `undo` now shows restored count and skipped count
+  separately (`✓ Restored N · ⚠ Skipped M`) with a brief explanation of why UIDs may change
+  after a folder MOVE on non-Gmail IMAP servers
+- `_reset_settings` autouse fixture in test suite — resets `_settings` cache and sets IMAP
+  env vars to known defaults between tests; prevents the user's real `~/.mailtrim/.env` from
+  affecting test outcomes
+
+### Changed
+- `stats`, `quickstart`, `purge`, `undo`, `doctor` `--provider` option now defaults to `""`
+  (reads from persisted config) rather than `"gmail"` — IMAP users no longer need to pass
+  `--provider imap` on every run
+- `quickstart`, `stats`, `purge`, `undo`, `doctor` docstrings updated to reflect IMAP
+  compatibility and zero-flag usage after setup
+- `doctor --provider imap` now uses the persisted `imap_server`/`imap_user` from settings
+  when those flags are omitted
+
+### Fixed
+- **Safety: `batch_trash` was permanently deleting messages when IMAP MOVE was unsupported**
+  — the fallback now does COPY → Trash then STORE `\Deleted` + EXPUNGE on the source,
+  preserving recoverability; if no Trash folder is found, the operation returns 0 and logs
+  a warning rather than silently destroying email
+- `doctor` IMAP Trash check updated to use `_get_trash_folder()` (SPECIAL-USE aware) instead
+  of name-only matching
+
+---
+
 ## [0.3.0] — 2026-05-01
 
 ### Added
