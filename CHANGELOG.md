@@ -11,6 +11,32 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.4.1] — 2026-05-03
+
+### Fixed
+- **Gmail setup now clears stale IMAP settings from `.env`** — switching from IMAP back to
+  Gmail via `mailtrim setup` previously left `MAILTRIM_IMAP_USER` and related keys in `.env`,
+  causing every subsequent command to prompt for an IMAP password even on a Gmail account.
+  Setup now writes `MAILTRIM_PROVIDER=gmail` and strips all `MAILTRIM_IMAP_*` lines on success.
+- **Consistent provider resolution** — `_resolve_imap_settings` had two bugs:
+  1. The "gmail" fallback only fired when settings failed to load entirely; if `MAILTRIM_PROVIDER`
+     was absent from `.env` (pre-v0.3.0 installs), the resolved provider silently became `""`.
+     Fixed to `provider or persisted or "gmail"` — "gmail" is always the ultimate default.
+  2. Stale IMAP settings (server, user, port, folder) were returned even when the resolved
+     provider was Gmail, allowing them to accidentally satisfy the IMAP password prompt guard.
+     IMAP values are now zeroed immediately when `resolved_provider != "imap"`.
+- **Silent `except OSError: pass` replaced with explicit warnings** — `.env` write failures in
+  both the Gmail and IMAP setup paths now print a yellow warning explaining what failed and how
+  to recover, rather than silently swallowing the error.
+
+### Added
+- **Provider indicator line** — `stats`, `quickstart`, and `purge` now print a single dim line
+  at the start of each run showing the active provider:
+  - Gmail: `Provider: Gmail`
+  - IMAP: `Provider: IMAP (server: imap.example.com)`
+
+---
+
 ## [0.4.0] — 2026-05-03
 
 ### Added
