@@ -76,6 +76,7 @@ mailtrim quickstart    # one command — scans, ranks, shows the safest first ac
 ### `mailtrim stats`
 
 ```
+Provider: Gmail
 ✨ Scan complete — analyzed 2,341 emails across 41 senders in 4s
   AI: OFF  no data leaves your machine
 
@@ -289,6 +290,7 @@ mailtrim doctor    # diagnoses auth, Gmail connection, storage, config
 | Scan feels slow | `mailtrim stats --max-scan 500` |
 | Not seeing enough senders | `mailtrim stats --scope anywhere` |
 | IMAP connection failed | Re-run `mailtrim setup` to update server/user settings |
+| Switched to Gmail but still prompted for IMAP password | Re-run `mailtrim setup` and choose Gmail — this clears stale IMAP settings from `.env` |
 | IMAP undo restores fewer emails than expected | Normal on non-Gmail IMAP — UIDs are folder-specific; check Trash manually for any remaining emails |
 | IMAP purge returns 0 emails moved | Server may lack a Trash folder; run `mailtrim doctor` to check |
 
