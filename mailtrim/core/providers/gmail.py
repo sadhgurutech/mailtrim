@@ -62,6 +62,18 @@ class GmailProvider(EmailProvider):
     ) -> int:
         return self._client.batch_label(ids, add=list(add), remove=list(remove))
 
+    def batch_untrash(self, ids: list[str]) -> int:
+        """Restore messages from Trash using Gmail's untrash API."""
+        for mid in ids:
+            self._client.untrash(mid)
+        return len(ids)
+
+    # ── Capabilities ──────────────────────────────────────────────────────────
+
+    def supports(self, capability: str) -> bool:
+        """Gmail supports all capabilities: labels, threads, unsubscribe, rules, untrash."""
+        return True
+
     # ── Account ───────────────────────────────────────────────────────────────
 
     def get_profile(self) -> dict:

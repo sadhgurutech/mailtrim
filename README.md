@@ -210,12 +210,22 @@ mailtrim stats
 mailtrim setup    # choose IMAP at the prompt — enter server, user, password
 ```
 
-Or pass flags directly:
+Setup saves your server, username, port, and folder to `~/.mailtrim/.env`.
+After that, every command works with no flags:
 
 ```bash
-mailtrim stats --provider imap --imap-server imap.fastmail.com --imap-user you@fastmail.com
-# Password: MAILTRIM_IMAP_PASSWORD env var, or prompted securely
+mailtrim stats       # reads persisted IMAP config automatically
+mailtrim purge       # same
+mailtrim undo        # same
 ```
+
+For the password, set it once in your shell environment (never stored on disk):
+
+```bash
+export MAILTRIM_IMAP_PASSWORD="your-app-password"
+```
+
+Or mailtrim will prompt securely each time.
 
 ---
 
@@ -247,7 +257,12 @@ Settings via `~/.mailtrim/.env` or environment variables:
 | `MAILTRIM_DRY_RUN` | `false` | Preview without executing |
 | `MAILTRIM_UNDO_WINDOW_DAYS` | `30` | How long undo logs are kept |
 | `MAILTRIM_DIR` | `~/.mailtrim` | Data directory |
-| `MAILTRIM_IMAP_PASSWORD` | *(not set)* | IMAP password (avoids interactive prompt) |
+| `MAILTRIM_PROVIDER` | `gmail` | Active provider — set automatically by `mailtrim setup` |
+| `MAILTRIM_IMAP_SERVER` | *(not set)* | IMAP server hostname — set automatically by `mailtrim setup` |
+| `MAILTRIM_IMAP_USER` | *(not set)* | IMAP username — set automatically by `mailtrim setup` |
+| `MAILTRIM_IMAP_PORT` | `993` | IMAP SSL port |
+| `MAILTRIM_IMAP_FOLDER` | `INBOX` | IMAP folder to scan |
+| `MAILTRIM_IMAP_PASSWORD` | *(not set)* | IMAP password — **never stored on disk**, set in your shell |
 
 **Set AI mode:**
 
@@ -273,6 +288,9 @@ mailtrim doctor    # diagnoses auth, Gmail connection, storage, config
 | "Rate limit hit" | Wait 60s, retry with `--max-scan 300` |
 | Scan feels slow | `mailtrim stats --max-scan 500` |
 | Not seeing enough senders | `mailtrim stats --scope anywhere` |
+| IMAP connection failed | Re-run `mailtrim setup` to update server/user settings |
+| IMAP undo restores fewer emails than expected | Normal on non-Gmail IMAP — UIDs are folder-specific; check Trash manually for any remaining emails |
+| IMAP purge returns 0 emails moved | Server may lack a Trash folder; run `mailtrim doctor` to check |
 
 ---
 

@@ -336,6 +336,8 @@ class IMAPProvider(EmailProvider):
         self._default_folder = folder
         self._conn: imaplib.IMAP4_SSL | None = None
         self._selected_folder: str | None = None
+        # Cached Trash folder name — detected once via SPECIAL-USE then reused
+        self._trash_folder: str | None = None
 
     # ── Connection management ─────────────────────────────────────────────────
 
@@ -388,6 +390,54 @@ class IMAPProvider(EmailProvider):
         for candidate in candidates:
             if any(candidate in box for box in existing):
                 return candidate
+        return None
+
+    def _get_trash_folder(self) -> str | None:
+        """
+        Return the Trash folder name, with result cached after the first call.
+
+        Detection order (RFC 6154 compliance):
+        1. IMAP SPECIAL-USE: look for the \\Trash attribute in LIST response.
+           Most modern servers (Gmail, Outlook, Fastmail, Dovecot 2.2+) advertise this.
+        2. Fallback: well-known names from _TRASH_FOLDERS.
+
+        The detected name is stored in self._trash_folder and returned on
+        subsequent calls without issuing another LIST command.
+        """
+        if self._trash_folder is not None:
+            return self._trash_folder
+
+        conn = self._ensure_connected()
+        typ, mailboxes = conn.list()
+        if typ != "OK":
+            return None
+
+        existing_strs: list[str] = []
+        for mb in mailboxes:
+            if not isinstance(mb, bytes):
+                continue
+            mb_str = mb.decode("utf-8", errors="replace")
+            existing_strs.append(mb_str)
+
+            # Parse: (\Attrib1 \Attrib2) "delimiter" "folder name"
+            # Folder name may or may not be quoted; delimiter may vary.
+            attr_m = re.match(r"\(([^)]*)\)\s+\"[^\"]*\"\s+(.*)", mb_str)
+            if attr_m:
+                attrs_raw = attr_m.group(1).lower()
+                name_raw = attr_m.group(2).strip().strip('"')
+                if r"\trash" in attrs_raw:
+                    self._trash_folder = name_raw
+                    logger.debug("Trash folder detected via SPECIAL-USE: %s", name_raw)
+                    return self._trash_folder
+
+        # Fallback: match by well-known names
+        for candidate in _TRASH_FOLDERS:
+            if any(candidate in box for box in existing_strs):
+                self._trash_folder = candidate
+                logger.debug("Trash folder detected via name match: %s", candidate)
+                return self._trash_folder
+
+        logger.warning("No Trash folder found on server %s", self._server)
         return None
 
     # ── Read ──────────────────────────────────────────────────────────────────
@@ -470,34 +520,48 @@ class IMAPProvider(EmailProvider):
     def batch_trash(self, ids: list[str]) -> int:
         r"""
         Move messages to the Trash folder.
-        Falls back to \Deleted flag + EXPUNGE if MOVE is unavailable.
+
+        Strategy (in order):
+        1. MOVE to Trash (RFC 6851 — atomic, one round-trip).
+        2. COPY to Trash + \Deleted flag + EXPUNGE (if MOVE is unsupported).
+        3. Return 0 if no Trash folder exists — never silently permanently deletes.
         """
         if not ids:
             return 0
         self._select(self._default_folder)
         conn = self._ensure_connected()
 
-        trash_folder = self._find_folder(_TRASH_FOLDERS)
+        trash_folder = self._get_trash_folder()
+        if not trash_folder:
+            # No Trash folder found — refuse to silently permanently delete.
+            logger.warning(
+                "IMAP batch_trash: no Trash folder found on %s; skipping %d messages",
+                self._server,
+                len(ids),
+            )
+            return 0
+
         uid_set = ",".join(ids)
-        count = 0
 
-        if trash_folder:
-            try:
-                typ, _ = conn.uid("MOVE", uid_set, trash_folder)
-                if typ == "OK":
-                    return len(ids)
-            except imaplib.IMAP4.error:
-                pass  # MOVE not supported — fall through to STORE+EXPUNGE
-
-        # Fallback: flag as deleted and expunge
+        # Attempt 1: MOVE (RFC 6851 — atomic)
         try:
-            conn.uid("STORE", uid_set, "+FLAGS", r"(\Deleted)")
-            conn.expunge()
-            count = len(ids)
-        except Exception as exc:
-            logger.warning("IMAP batch_trash fallback failed: %s", exc)
+            typ, _ = conn.uid("MOVE", uid_set, trash_folder)
+            if typ == "OK":
+                return len(ids)
+        except imaplib.IMAP4.error:
+            pass  # MOVE not supported — fall through to COPY+DELETE
 
-        return count
+        # Attempt 2: COPY to Trash, then flag \Deleted + EXPUNGE in source
+        try:
+            typ, _ = conn.uid("COPY", uid_set, trash_folder)
+            if typ == "OK":
+                conn.uid("STORE", uid_set, "+FLAGS", r"(\Deleted)")
+                conn.expunge()
+                return len(ids)
+        except Exception as exc:
+            logger.warning("IMAP batch_trash fallback (COPY+DELETE) failed: %s", exc)
+
+        return 0
 
     def batch_delete_permanent(self, ids: list[str]) -> int:
         r"""Permanently delete messages — flag \Deleted and EXPUNGE immediately."""
@@ -541,6 +605,67 @@ class IMAPProvider(EmailProvider):
         except Exception as exc:
             logger.warning("IMAP batch_archive fallback failed: %s", exc)
             return 0
+
+    def batch_untrash(self, ids: list[str]) -> int:
+        r"""
+        Move messages from Trash back to the default folder (INBOX).
+
+        UIDs stored in the undo log are INBOX UIDs at the time of trashing.
+        On Gmail IMAP (imap.gmail.com) UIDs are globally unique and remain
+        valid across folders, so restore is reliable.
+        On standard IMAP servers UIDs are folder-specific and may change
+        after a MOVE — restore is best-effort and returns 0 on mismatch.
+
+        Tries MOVE first (RFC 6851); falls back to COPY + \Deleted + EXPUNGE.
+        """
+        if not ids:
+            return 0
+
+        trash_folder = self._get_trash_folder()
+        if not trash_folder:
+            logger.warning("No Trash folder found; cannot restore messages")
+            return 0
+
+        conn = self._ensure_connected()
+        # Switch to Trash so UIDs are interpreted in that namespace
+        typ, _ = conn.select(trash_folder, readonly=False)
+        if typ != "OK":
+            logger.warning("Cannot SELECT Trash folder '%s'", trash_folder)
+            return 0
+        self._selected_folder = trash_folder
+
+        uid_set = ",".join(ids)
+
+        # Attempt MOVE (RFC 6851 — atomic, preserves flags)
+        try:
+            typ, _ = conn.uid("MOVE", uid_set, self._default_folder)
+            if typ == "OK":
+                return len(ids)
+        except Exception:
+            pass  # MOVE not supported or network error — fall through to COPY+DELETE
+
+        # Fallback: COPY to inbox, mark \Deleted in Trash, EXPUNGE
+        try:
+            typ, _ = conn.uid("COPY", uid_set, self._default_folder)
+            if typ == "OK":
+                conn.uid("STORE", uid_set, "+FLAGS", r"(\Deleted)")
+                conn.expunge()
+                return len(ids)
+        except Exception as exc:
+            logger.warning("IMAP batch_untrash fallback failed: %s", exc)
+
+        return 0
+
+    # ── Capabilities ──────────────────────────────────────────────────────────
+
+    def supports(self, capability: str) -> bool:
+        """
+        IMAP supports only the core read/write pipeline.
+
+        Capabilities not supported: labels, threads, unsubscribe, rules.
+        'untrash' is best-effort (reliable on Gmail IMAP, approximate elsewhere).
+        """
+        return False
 
     def batch_label(
         self,
