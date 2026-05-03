@@ -250,14 +250,16 @@ def check_imap_trash_folder(server: str, user: str, password: str, port: int = 9
 
 def run_imap_checks(server: str, user: str, password: str, port: int = 993) -> list[CheckResult]:
     """Run the IMAP-specific health checks and return results."""
+    import functools
+
     results: list[CheckResult] = []
     for fn in [
-        lambda: check_dependencies(),
-        lambda: check_config(),
-        lambda: check_data_dir(),
-        lambda: check_undo_storage(),
-        lambda: check_imap_connection(server, user, password, port),
-        lambda: check_imap_trash_folder(server, user, password, port),
+        check_dependencies,
+        check_config,
+        check_data_dir,
+        check_undo_storage,
+        functools.partial(check_imap_connection, server, user, password, port),
+        functools.partial(check_imap_trash_folder, server, user, password, port),
     ]:
         try:
             results.append(fn())
