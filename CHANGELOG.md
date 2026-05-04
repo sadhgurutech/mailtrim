@@ -9,6 +9,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+---
+
+## [0.4.2] — 2026-05-03
+
 ### Added
 - `mailtrim version` command and `mailtrim --version` / `-V` flag — prints `mailtrim <version>`
   and exits; version string sourced from `mailtrim.__version__` (single source of truth)
