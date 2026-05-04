@@ -165,6 +165,7 @@ See [PRIVACY.md](PRIVACY.md) for the full data flow.
 | `mailtrim purge --sort size` | Show largest senders first |
 | `mailtrim undo` | List recent operations and reverse any of them |
 | `mailtrim undo 3` | Reverse operation #3 specifically |
+| `mailtrim version` | Show installed version (`--version` / `-V` also works) |
 | `mailtrim doctor` | Health check — auth, Gmail connection, storage, config |
 | `mailtrim sync` | Pull inbox into local cache for faster repeated queries |
 | `mailtrim unsubscribe email@sender.com` | Unsubscribe via List-Unsubscribe header |

@@ -26,6 +26,26 @@ app = typer.Typer(
 console = Console()
 
 
+@app.callback(invoke_without_command=True)
+def _main(
+    ctx: typer.Context = typer.Option(None, hidden=True),
+    version: bool = typer.Option(
+        False, "--version", "-V", is_eager=True, help="Show version and exit."
+    ),
+) -> None:
+    if version:
+        typer.echo(f"mailtrim {__version__}")
+        raise typer.Exit()
+    if ctx.invoked_subcommand is None:
+        typer.echo(ctx.get_help())
+
+
+@app.command()
+def version() -> None:
+    """Show the installed mailtrim version."""
+    typer.echo(f"mailtrim {__version__}")
+
+
 # ── Lazy imports to keep startup fast ────────────────────────────────────────
 
 
@@ -3521,12 +3541,6 @@ def privacy():
     console.print("  [green]✓[/green]  No account data shared with mailtrim project")
     console.print("  [green]✓[/green]  OAuth token stored locally at chmod 600")
     console.print()
-
-
-@app.command()
-def version():
-    """Print version."""
-    console.print(f"mailtrim {__version__}")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
