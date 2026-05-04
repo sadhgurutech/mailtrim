@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mailtrim"
-version = "0.4.1"
+version = "0.4.2"
 description = "Privacy-first email inbox management — Gmail + IMAP, local-first core, optional AI via Anthropic API"
 readme = "README.md"
 requires-python = ">=3.11"
