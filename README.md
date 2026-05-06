@@ -156,19 +156,24 @@ See [PRIVACY.md](PRIVACY.md) for the full data flow.
 | Command | What it does |
 |---|---|
 | `mailtrim setup` | Guided first-time setup: connect Gmail or IMAP, run first scan |
+| `mailtrim auth` | Re-authenticate with Gmail (OAuth browser flow) |
 | `mailtrim quickstart` | One-shot scan → shows your safest first cleanup action |
 | `mailtrim stats` | Rank all senders by storage impact with confidence scores |
 | `mailtrim stats --since 30d` | Scope the scan to the last N days |
+| `mailtrim stats --scope anywhere` | Include archived and sent mail, not just inbox |
 | `mailtrim stats --share` | Generate a shareable summary (Twitter/plain) |
 | `mailtrim purge` | Interactive bulk delete — pick senders, confirm, done |
 | `mailtrim purge --domain example.com` | Target one domain directly |
 | `mailtrim purge --sort size` | Show largest senders first |
+| `mailtrim protect invoices@bank.com` | Protect a sender from future purge operations |
 | `mailtrim undo` | List recent operations and reverse any of them |
 | `mailtrim undo 3` | Reverse operation #3 specifically |
 | `mailtrim version` | Show installed version (`--version` / `-V` also works) |
 | `mailtrim doctor` | Health check — auth, Gmail connection, storage, config |
 | `mailtrim sync` | Pull inbox into local cache for faster repeated queries |
 | `mailtrim unsubscribe email@sender.com` | Unsubscribe via List-Unsubscribe header |
+| `mailtrim privacy` | Show exactly what data is stored and what (if anything) leaves your machine |
+| `mailtrim config ai-mode off\|local\|cloud` | Set AI mode persistently |
 
 ### Optional AI (requires `mailtrim config ai-mode cloud`)
 
